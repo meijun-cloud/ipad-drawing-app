@@ -260,63 +260,82 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   // and native listeners on the container to intercept multi-touch pinch.
 
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    // Track all pointers
     activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
-    // Two or more fingers / touches → navigation mode, not drawing
-    if (activePointers.current.size >= 2) {
-      // Cancel any in-progress drawing stroke
-      if (isDrawing.current) {
-        isDrawing.current = false;
-        currentPoints.current = [];
-        lastPoint.current = null;
-      }
+    // ── Apple Pencil (pointerType==='pen') 永遠畫圖 ──
+    if (e.pointerType === 'pen') {
+      try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {}
+      isDrawing.current = true;
+      const coords = getCanvasCoords(e.clientX, e.clientY);
+      const time = Date.now();
+      const pressure = e.pressure > 0 ? e.pressure : 0.5;
+      currentPoints.current = [{ x: coords.x, y: coords.y, pressure, time }];
+      lastPoint.current = { x: coords.x, y: coords.y, pressure, time };
+      hapticFeedback.playTap('selection');
+      drawCanvas();
       return;
     }
 
-    // Right-click or middle-click → pan
+    // ── 滑鼠中鍵/右鍵 → 平移 ──
     if (e.button === 1 || e.button === 2) {
       isPanning.current = true;
       panStart.current = { x: e.clientX - panRef.current.x, y: e.clientY - panRef.current.y };
       return;
     }
 
-    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+    // ── 手指觸控：單指平移，雙指捏合在 move 處理 ──
+    if (e.pointerType === 'touch') {
+      if (isDrawing.current) {
+        isDrawing.current = false;
+        currentPoints.current = [];
+        lastPoint.current = null;
+      }
+      if (activePointers.current.size === 1) {
+        isPanning.current = true;
+        panStart.current = { x: e.clientX - panRef.current.x, y: e.clientY - panRef.current.y };
+      }
+      return;
+    }
 
+    // ── 滑鼠左鍵 → 畫圖（電腦用） ──
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {}
     isDrawing.current = true;
     const coords = getCanvasCoords(e.clientX, e.clientY);
     const time = Date.now();
-    const pressure = e.pointerType === 'pen' && e.pressure > 0 ? e.pressure : 0.5;
-
-    currentPoints.current = [{ x: coords.x, y: coords.y, pressure, time }];
-    lastPoint.current = { x: coords.x, y: coords.y, pressure, time };
-
+    currentPoints.current = [{ x: coords.x, y: coords.y, pressure: 0.5, time }];
+    lastPoint.current = { x: coords.x, y: coords.y, pressure: 0.5, time };
     hapticFeedback.playTap('selection');
     drawCanvas();
   };
 
   const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    // Update pointer tracking
     activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
     const coords = getCanvasCoords(e.clientX, e.clientY);
     setPointerPos(coords);
 
-    // ── Pinch-zoom (2 fingers) ──
-    if (activePointers.current.size === 2) {
+    // ── Apple Pencil → 直接畫 ──
+    if (e.pointerType === 'pen' && isDrawing.current) {
+      const time = Date.now();
+      const smoothed = applySmoothing(coords.x, coords.y, brushSettings[currentTool].stabilizer);
+      const pressure = e.pressure > 0 ? e.pressure : (lastPoint.current?.pressure ?? 0.5);
+      const point: StrokePoint = { x: smoothed.x, y: smoothed.y, pressure, time };
+      currentPoints.current.push(point);
+      lastPoint.current = point;
+      drawCanvas();
+      return;
+    }
+
+    // ── 雙指捏合縮放 ──
+    if (activePointers.current.size >= 2) {
+      isPanning.current = false;
       const pts = [...activePointers.current.values()];
       const dx = pts[1].x - pts[0].x, dy = pts[1].y - pts[0].y;
       const dist = Math.hypot(dx, dy);
       const mid = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 };
-
       if (lastPinchDist.current !== null && lastPinchMid.current !== null) {
         const scale = dist / lastPinchDist.current;
-        const newZoom = Math.max(0.1, Math.min(10, zoomRef.current * scale));
-        setCanvasZoom(newZoom);
-
-        // Pan to follow the pinch midpoint
-        const panDx = mid.x - lastPinchMid.current.x;
-        const panDy = mid.y - lastPinchMid.current.y;
-        setCanvasPan({ x: panRef.current.x + panDx, y: panRef.current.y + panDy });
+        setCanvasZoom(Math.max(0.1, Math.min(10, zoomRef.current * scale)));
+        setCanvasPan({ x: panRef.current.x + mid.x - lastPinchMid.current.x, y: panRef.current.y + mid.y - lastPinchMid.current.y });
       }
       lastPinchDist.current = dist;
       lastPinchMid.current = mid;
@@ -325,31 +344,25 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     lastPinchDist.current = null;
     lastPinchMid.current = null;
 
+    // ── 單指平移 ──
     if (isPanning.current) {
       setCanvasPan({ x: e.clientX - panStart.current.x, y: e.clientY - panStart.current.y });
       return;
     }
 
+    // ── 滑鼠畫圖 ──
     if (!isDrawing.current) return;
-
     const time = Date.now();
-    const stabilizer = brushSettings[currentTool].stabilizer;
-    const smoothed = applySmoothing(coords.x, coords.y, stabilizer);
-
-    let pressure = 0.5;
-    if (e.pointerType === 'pen' && e.pressure > 0) {
-      pressure = e.pressure;
-    } else {
-      pressure = calculatePressure(smoothed.x, smoothed.y, time);
-    }
-
+    const smoothed = applySmoothing(coords.x, coords.y, brushSettings[currentTool].stabilizer);
+    const pressure = calculatePressure(smoothed.x, smoothed.y, time);
     const point: StrokePoint = { x: smoothed.x, y: smoothed.y, pressure, time };
     currentPoints.current.push(point);
     lastPoint.current = point;
     drawCanvas();
   };
 
-  const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+
+    const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
     activePointers.current.delete(e.pointerId);
     lastPinchDist.current = null;
     lastPinchMid.current = null;

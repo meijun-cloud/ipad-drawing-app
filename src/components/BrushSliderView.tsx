@@ -74,8 +74,8 @@ export const BrushSliderView: React.FC<BrushSliderViewProps> = ({
           <div className="flex flex-col items-center h-full justify-between">
             <span className="text-[9px] font-bold text-gray-400">20pt</span>
             
-            {/* Custom styled Vertical Slider */}
-            <div className="relative w-4 h-28 flex items-center justify-center">
+            {/* Vertical Slider - iOS Safari 相容寫法 */}
+            <div className="relative flex items-center justify-center" style={{ height: '112px', width: '32px' }}>
               <input
                 type="range"
                 min="1"
@@ -84,16 +84,18 @@ export const BrushSliderView: React.FC<BrushSliderViewProps> = ({
                 value={currentSize}
                 onChange={handleSizeChange}
                 style={{
-                  writingMode: 'vertical-lr' as React.CSSProperties['writingMode'],
-                  WebkitAppearance: 'none',
+                  position: 'absolute',
+                  width: '112px',
+                  height: '28px',
                   transform: 'rotate(-90deg)',
-                  width: '110px',
-                  background: 'rgba(255, 255, 255, 0.1)',
-                  borderRadius: '4px',
+                  WebkitAppearance: 'slider-vertical' as any,
+                  appearance: 'slider-vertical' as any,
                   cursor: 'pointer',
-                  outline: 'none',
+                  accentColor: '#2997FF',
+                  background: 'rgba(255,255,255,0.15)',
+                  borderRadius: '4px',
+                  touchAction: 'none',
                 }}
-                className="accent-[#2997FF] outline-none"
               />
             </div>
             
@@ -103,8 +105,8 @@ export const BrushSliderView: React.FC<BrushSliderViewProps> = ({
           <div className="flex flex-col items-center h-full justify-between">
             <span className="text-[9px] font-bold text-gray-400">100%</span>
             
-            {/* Custom styled Vertical Slider for Opacity */}
-            <div className="relative w-4 h-28 flex items-center justify-center">
+            {/* Vertical Slider - iOS Safari 相容寫法 */}
+            <div className="relative flex items-center justify-center" style={{ height: '112px', width: '32px' }}>
               <input
                 type="range"
                 min="0.1"
@@ -113,16 +115,18 @@ export const BrushSliderView: React.FC<BrushSliderViewProps> = ({
                 value={currentOpacity}
                 onChange={handleOpacityChange}
                 style={{
-                  writingMode: 'vertical-lr' as React.CSSProperties['writingMode'],
-                  WebkitAppearance: 'none',
+                  position: 'absolute',
+                  width: '112px',
+                  height: '28px',
                   transform: 'rotate(-90deg)',
-                  width: '110px',
-                  background: 'rgba(255, 255, 255, 0.1)',
-                  borderRadius: '4px',
+                  WebkitAppearance: 'slider-vertical' as any,
+                  appearance: 'slider-vertical' as any,
                   cursor: 'pointer',
-                  outline: 'none',
+                  accentColor: '#10b981',
+                  background: 'rgba(255,255,255,0.15)',
+                  borderRadius: '4px',
+                  touchAction: 'none',
                 }}
-                className="accent-emerald-500 outline-none"
               />
             </div>
             
