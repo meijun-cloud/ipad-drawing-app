@@ -1,0 +1,22 @@
+@import "tailwindcss";
+
+/* 防止全頁滑動干擾繪圖 */
+html, body {
+  overflow: hidden;
+  touch-action: none;
+  overscroll-behavior: none;
+  -webkit-overflow-scrolling: touch;
+  height: 100%;
+  width: 100%;
+}
+
+#root {
+  height: 100%;
+  width: 100%;
+}
+
+/* 垂直 range slider 相容性 */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+}
