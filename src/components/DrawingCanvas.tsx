@@ -56,19 +56,47 @@ function renderStrokeToCtx(ctx: CanvasRenderingContext2D, stroke: Stroke, dpr: n
       for (let i = 1; i < stroke.points.length; i++) {
         const p0 = stroke.points[i - 1], p1 = stroke.points[i];
         if (stroke.tool === 'pencil') {
-          // 鉛筆：碳粉顆粒
+          // 鉛筆：石墨質感 — 主線 + 極細紋理，清晰即時
           const dist = Math.hypot(p1.x - p0.x, p1.y - p0.y);
-          const steps = Math.max(1, Math.floor(dist / 2));
-          const sz = stroke.size * (0.5 + p1.pressure * 0.6);
-          ctx.fillStyle = stroke.color;
-          for (let s = 0; s <= steps; s++) {
-            const t = s / steps;
-            const px = p0.x + (p1.x - p0.x) * t + (Math.random() * 2 - 1) * sz * 0.4;
-            const py = p0.y + (p1.y - p0.y) * t + (Math.random() * 2 - 1) * sz * 0.4;
-            ctx.save();
-            ctx.globalAlpha = stroke.opacity * (Math.random() * 0.3 + 0.08);
-            ctx.beginPath(); ctx.arc(px, py, Math.random() * 0.5 + 0.2, 0, Math.PI * 2); ctx.fill();
-            ctx.restore();
+          if (dist < 0.5) break;
+          const pr = (p0.pressure + p1.pressure) / 2;
+          const sz = stroke.size * (0.3 + pr * 0.55); // 細筆
+
+          // ① 主線：貝茲平滑，不透明為主
+          const mx = (p0.x + p1.x) / 2, my = (p0.y + p1.y) / 2;
+          ctx.save();
+          ctx.globalAlpha = stroke.opacity * (0.7 + pr * 0.25);
+          ctx.strokeStyle = stroke.color;
+          ctx.lineWidth = sz;
+          ctx.lineCap = 'round';
+          ctx.lineJoin = 'round';
+          ctx.beginPath();
+          ctx.moveTo(p0.x, p0.y);
+          ctx.quadraticCurveTo(p0.x, p0.y, mx, my);
+          ctx.stroke();
+          ctx.restore();
+
+          // ② 石墨邊緣紋理：極少量、極小顆粒，沿線分布
+          if (stroke.size > 1.5) {
+            const steps = Math.max(1, Math.floor(dist / 3));
+            ctx.fillStyle = stroke.color;
+            for (let s = 0; s <= steps; s++) {
+              const t = s / steps;
+              const bx = p0.x + (p1.x - p0.x) * t;
+              const by = p0.y + (p1.y - p0.y) * t;
+              const grainCount = Math.floor(sz * 1.2);
+              for (let g = 0; g < grainCount; g++) {
+                const spread = sz * 0.6;
+                const gx = bx + (Math.random() * 2 - 1) * spread;
+                const gy = by + (Math.random() * 2 - 1) * spread;
+                ctx.save();
+                ctx.globalAlpha = stroke.opacity * (Math.random() * 0.18 + 0.04);
+                ctx.beginPath();
+                ctx.arc(gx, gy, Math.random() * 0.4 + 0.1, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.restore();
+              }
+            }
           }
         } else {
           // 針筆/橡皮擦：平滑線
