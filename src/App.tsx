@@ -7,7 +7,7 @@ import { BrushSliderView } from './components/BrushSliderView';
 import { ColorPickerView } from './components/ColorPickerView';
 import {
   Undo2, Redo2, Share2, Sparkles, Grid, Volume2,
-  ChevronRight, Info
+  ChevronRight, Info, Palette
 } from 'lucide-react';
 
 export default function App() {
@@ -266,11 +266,13 @@ export default function App() {
           <div className="absolute right-4 sm:right-6 top-4 sm:top-6 z-10 flex flex-col items-end">
             <button
               onClick={() => { setShowColorPicker(!showColorPicker); triggerVisualTaptic('light', '開啟色彩面板'); }}
-              className="w-12 h-12 rounded-full border-2 border-white shadow-2xl cursor-pointer active:scale-95 transition-all overflow-hidden flex items-center justify-center m-1.5"
+              className="w-12 h-12 rounded-full border-[2.5px] border-white/30 shadow-2xl cursor-pointer active:scale-95 transition-all flex items-center justify-center m-1.5 relative overflow-hidden"
               style={{ backgroundColor: currentColor }}
               title="開啟調色盤"
             >
-              <span className="text-white text-lg drop-shadow">🎨</span>
+              {/* 半透明遮罩讓 icon 更清晰 */}
+              <div className="absolute inset-0 bg-black/20 rounded-full" />
+              <Palette size={20} className="text-white drop-shadow relative z-10" strokeWidth={2} />
             </button>
             {showColorPicker && (
               <div className="mt-2">
