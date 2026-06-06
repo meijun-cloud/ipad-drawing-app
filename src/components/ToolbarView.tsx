@@ -28,6 +28,8 @@ export const ToolbarView: React.FC<ToolbarViewProps> = ({
   onShowAlert,
 }) => {
   const [hoveredTool, setHoveredTool] = useState<ToolType | null>(null);
+  // 哪個群組的子選單是展開的：'pen' | 'brush' | null
+  const [openGroup, setOpenGroup] = useState<'pen' | 'brush' | null>(null);
 
   const handleToolSelection = (tool: ToolType) => {
     if (tool === 'lasso') {
@@ -76,7 +78,14 @@ export const ToolbarView: React.FC<ToolbarViewProps> = ({
       {/* Pen Group Button & Sub-selector */}
       <div className="relative group">
         <button
-          onClick={() => handleToolSelection(currentTool === 'pencil' ? 'pencil' : 'pen')}
+          onClick={() => {
+            if (openGroup === 'pen') {
+              setOpenGroup(null); // 再點一次主按鈕 → 收合
+            } else {
+              setOpenGroup('pen');
+              handleToolSelection(currentTool === 'pencil' ? 'pencil' : 'pen');
+            }
+          }}
           onMouseEnter={() => setHoveredTool(isPenActive ? currentTool : 'pen')}
           onMouseLeave={() => setHoveredTool(null)}
           className={`w-11 h-11 rounded-xl flex flex-col items-center justify-center transition-all relative ${
@@ -92,10 +101,10 @@ export const ToolbarView: React.FC<ToolbarViewProps> = ({
         </button>
 
         {/* Floating submenu shelf popping out to the right */}
-        {isPenActive && (
+        {openGroup === 'pen' && (
           <div className="absolute left-[54px] top-0 bg-[#2c2c2e]/95 border border-white/10 rounded-xl p-1 shadow-2xl flex gap-1 z-50 animate-in fade-in slide-in-from-left-1 duration-150 backdrop-blur-md">
             <button
-              onClick={() => handleToolSelection('pen')}
+              onClick={() => { handleToolSelection('pen'); setOpenGroup(null); }}
               onMouseEnter={() => setHoveredTool('pen')}
               onMouseLeave={() => setHoveredTool(null)}
               className={`px-2.5 py-1.5 text-[10px] rounded-lg flex items-center gap-1.5 whitespace-nowrap transition-all active:scale-95 cursor-pointer ${
@@ -106,7 +115,7 @@ export const ToolbarView: React.FC<ToolbarViewProps> = ({
               針筆
             </button>
             <button
-              onClick={() => handleToolSelection('pencil')}
+              onClick={() => { handleToolSelection('pencil'); setOpenGroup(null); }}
               onMouseEnter={() => setHoveredTool('pencil')}
               onMouseLeave={() => setHoveredTool(null)}
               className={`px-2.5 py-1.5 text-[10px] rounded-lg flex items-center gap-1.5 whitespace-nowrap transition-all active:scale-95 cursor-pointer ${
@@ -123,7 +132,14 @@ export const ToolbarView: React.FC<ToolbarViewProps> = ({
       {/* Crayon/Brush Group Button & Sub-selector */}
       <div className="relative group">
         <button
-          onClick={() => handleToolSelection(isBrushActive ? currentTool : 'crayon')}
+          onClick={() => {
+            if (openGroup === 'brush') {
+              setOpenGroup(null); // 再點一次主按鈕 → 收合
+            } else {
+              setOpenGroup('brush');
+              handleToolSelection(isBrushActive ? currentTool : 'crayon');
+            }
+          }}
           onMouseEnter={() => setHoveredTool(isBrushActive ? currentTool : 'crayon')}
           onMouseLeave={() => setHoveredTool(null)}
           className={`w-11 h-11 rounded-xl flex flex-col items-center justify-center transition-all relative ${
@@ -146,10 +162,10 @@ export const ToolbarView: React.FC<ToolbarViewProps> = ({
         </button>
 
         {/* Floating submenu shelf popping out to the right */}
-        {isBrushActive && (
+        {openGroup === 'brush' && (
           <div className="absolute left-[54px] top-0 bg-[#2c2c2e]/95 border border-white/10 rounded-xl p-1 shadow-2xl flex gap-1 z-50 animate-in fade-in slide-in-from-left-1 duration-150 backdrop-blur-md">
             <button
-              onClick={() => handleToolSelection('crayon')}
+              onClick={() => { handleToolSelection('crayon'); setOpenGroup(null); }}
               onMouseEnter={() => setHoveredTool('crayon')}
               onMouseLeave={() => setHoveredTool(null)}
               className={`px-2.5 py-1.5 text-[10px] rounded-lg flex items-center gap-1.5 whitespace-nowrap transition-all active:scale-95 cursor-pointer ${
@@ -160,7 +176,7 @@ export const ToolbarView: React.FC<ToolbarViewProps> = ({
               粉蠟筆
             </button>
             <button
-              onClick={() => handleToolSelection('watercolor')}
+              onClick={() => { handleToolSelection('watercolor'); setOpenGroup(null); }}
               onMouseEnter={() => setHoveredTool('watercolor')}
               onMouseLeave={() => setHoveredTool(null)}
               className={`px-2.5 py-1.5 text-[10px] rounded-lg flex items-center gap-1.5 whitespace-nowrap transition-all active:scale-95 cursor-pointer ${
@@ -171,7 +187,7 @@ export const ToolbarView: React.FC<ToolbarViewProps> = ({
               水彩筆
             </button>
             <button
-              onClick={() => handleToolSelection('airbrush')}
+              onClick={() => { handleToolSelection('airbrush'); setOpenGroup(null); }}
               onMouseEnter={() => setHoveredTool('airbrush')}
               onMouseLeave={() => setHoveredTool(null)}
               className={`px-2.5 py-1.5 text-[10px] rounded-lg flex items-center gap-1.5 whitespace-nowrap transition-all active:scale-95 cursor-pointer ${
@@ -188,7 +204,7 @@ export const ToolbarView: React.FC<ToolbarViewProps> = ({
       {/* Eraser Tool button */}
       <div className="relative group">
         <button
-          onClick={() => handleToolSelection('eraser')}
+          onClick={() => { handleToolSelection('eraser'); setOpenGroup(null); }}
           onMouseEnter={() => setHoveredTool('eraser')}
           onMouseLeave={() => setHoveredTool(null)}
           className={`w-11 h-11 rounded-xl flex flex-col items-center justify-center transition-all relative ${
@@ -207,7 +223,7 @@ export const ToolbarView: React.FC<ToolbarViewProps> = ({
       {/* Advanced Lasso Tool button */}
       <div className="relative group">
         <button
-          onClick={() => handleToolSelection('lasso')}
+          onClick={() => { handleToolSelection('lasso'); setOpenGroup(null); }}
           onMouseEnter={() => setHoveredTool('lasso')}
           onMouseLeave={() => setHoveredTool(null)}
           className={`w-11 h-11 rounded-xl flex flex-col items-center justify-center transition-all relative ${

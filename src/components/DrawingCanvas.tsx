@@ -1,3 +1,15 @@
+/**
+ * DrawingCanvas — 雙層 Canvas 架構
+ *
+ * baseCanvas (底層)：只存已完成的所有筆觸，不會重畫
+ * liveCanvas (上層)：只畫「當前正在進行的那一筆」，筆抬起時合併到底層並清空
+ *
+ * 好處：
+ *   - 畫第二筆時，第一筆絕對不會跳動或重算
+ *   - 上層只渲染極少量的點，反應幾乎零延遲
+ *   - 粉蠟筆/水彩/噴槍等效果跟 Procreate 一樣柔和即時
+ */
+
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { ToolType, Stroke, StrokePoint, BrushSettings } from '../types';
 import { hapticFeedback } from './AudioSynthesizer';
@@ -17,218 +29,324 @@ interface DrawingCanvasProps {
   onTriggerSignatureMode: () => void;
 }
 
+// ─── 筆觸渲染函式（底層 & 上層共用）────────────────────────────────────────────
+function renderStrokeToCtx(ctx: CanvasRenderingContext2D, stroke: Stroke, dpr: number) {
+  if (stroke.points.length === 0) return;
+  ctx.save();
+  ctx.scale(dpr, dpr);
+  ctx.globalAlpha = stroke.opacity;
+
+  switch (stroke.tool) {
+    case 'pen':
+    case 'pencil':
+    case 'eraser': {
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.strokeStyle = stroke.color;
+      if (stroke.points.length === 1) {
+        ctx.beginPath();
+        ctx.fillStyle = stroke.color;
+        ctx.arc(stroke.points[0].x, stroke.points[0].y, stroke.size / 2, 0, Math.PI * 2);
+        ctx.fill();
+        break;
+      }
+      // 用貝茲曲線讓針筆更平滑
+      ctx.beginPath();
+      ctx.moveTo(stroke.points[0].x, stroke.points[0].y);
+      for (let i = 1; i < stroke.points.length; i++) {
+        const p0 = stroke.points[i - 1], p1 = stroke.points[i];
+        if (stroke.tool === 'pencil') {
+          // 鉛筆：碳粉顆粒
+          const dist = Math.hypot(p1.x - p0.x, p1.y - p0.y);
+          const steps = Math.max(1, Math.floor(dist / 2));
+          const sz = stroke.size * (0.5 + p1.pressure * 0.6);
+          ctx.fillStyle = stroke.color;
+          for (let s = 0; s <= steps; s++) {
+            const t = s / steps;
+            const px = p0.x + (p1.x - p0.x) * t + (Math.random() * 2 - 1) * sz * 0.4;
+            const py = p0.y + (p1.y - p0.y) * t + (Math.random() * 2 - 1) * sz * 0.4;
+            ctx.save();
+            ctx.globalAlpha = stroke.opacity * (Math.random() * 0.3 + 0.08);
+            ctx.beginPath(); ctx.arc(px, py, Math.random() * 0.5 + 0.2, 0, Math.PI * 2); ctx.fill();
+            ctx.restore();
+          }
+        } else {
+          // 針筆/橡皮擦：平滑線
+          const sz = stroke.size * (0.35 + p1.pressure * 0.85);
+          ctx.beginPath();
+          ctx.lineWidth = sz;
+          const mx = (p0.x + p1.x) / 2, my = (p0.y + p1.y) / 2;
+          ctx.moveTo(p0.x, p0.y);
+          ctx.quadraticCurveTo(p0.x, p0.y, mx, my);
+          ctx.stroke();
+        }
+      }
+      break;
+    }
+
+    case 'crayon': {
+      // 粉蠟筆：高斯分布的蠟筆顆粒，更柔和
+      ctx.fillStyle = stroke.color;
+      for (let i = 1; i < stroke.points.length; i++) {
+        const p0 = stroke.points[i - 1], p1 = stroke.points[i];
+        const dist = Math.hypot(p1.x - p0.x, p1.y - p0.y);
+        const steps = Math.max(1, Math.floor(dist / 2));
+        const pr = (p0.pressure + p1.pressure) / 2;
+        const sz = stroke.size * (0.6 + pr * 0.5);
+
+        for (let s = 0; s <= steps; s++) {
+          const t = s / steps;
+          const cx = p0.x + (p1.x - p0.x) * t;
+          const cy = p0.y + (p1.y - p0.y) * t;
+          // 蠟筆核心：實心中心
+          ctx.save();
+          ctx.globalAlpha = stroke.opacity * 0.55 * pr;
+          ctx.beginPath();
+          ctx.arc(cx, cy, sz * 0.25, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+          // 蠟筆邊緣：散落顆粒
+          const grainCount = Math.floor(sz * 2.5);
+          for (let g = 0; g < grainCount; g++) {
+            const angle = Math.random() * Math.PI * 2;
+            const r = Math.pow(Math.random(), 0.5) * sz * 0.7;
+            ctx.save();
+            ctx.globalAlpha = stroke.opacity * (Math.random() * 0.25 + 0.03);
+            ctx.beginPath();
+            ctx.arc(cx + r * Math.cos(angle), cy + r * Math.sin(angle),
+              Math.random() * 0.8 + 0.2, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+          }
+        }
+      }
+      break;
+    }
+
+    case 'watercolor': {
+      // 水彩：多層半透明漸層，模擬顏料擴散
+      for (let i = 1; i < stroke.points.length; i++) {
+        const p0 = stroke.points[i - 1], p1 = stroke.points[i];
+        const dist = Math.hypot(p1.x - p0.x, p1.y - p0.y);
+        const steps = Math.max(1, Math.floor(dist / 4));
+        const pr = (p0.pressure + p1.pressure) / 2;
+        const radius = stroke.size * (1.2 + pr * 0.8);
+
+        for (let s = 0; s <= steps; s++) {
+          const t = s / steps;
+          const cx = p0.x + (p1.x - p0.x) * t;
+          const cy = p0.y + (p1.y - p0.y) * t;
+
+          // 主色層
+          ctx.save();
+          ctx.globalAlpha = stroke.opacity * 0.06 * (0.7 + pr * 0.5);
+          const g1 = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius);
+          g1.addColorStop(0, stroke.color);
+          g1.addColorStop(0.6, stroke.color);
+          g1.addColorStop(1, stroke.color + '00');
+          ctx.fillStyle = g1;
+          ctx.beginPath(); ctx.arc(cx, cy, radius, 0, Math.PI * 2); ctx.fill();
+          ctx.restore();
+
+          // 邊緣暈染（更深，模擬水彩乾燥邊）
+          ctx.save();
+          ctx.globalAlpha = stroke.opacity * 0.035;
+          const g2 = ctx.createRadialGradient(cx, cy, radius * 0.7, cx, cy, radius * 1.1);
+          g2.addColorStop(0, stroke.color + '00');
+          g2.addColorStop(0.7, stroke.color);
+          g2.addColorStop(1, stroke.color + '00');
+          ctx.fillStyle = g2;
+          ctx.beginPath(); ctx.arc(cx, cy, radius * 1.1, 0, Math.PI * 2); ctx.fill();
+          ctx.restore();
+        }
+      }
+      break;
+    }
+
+    case 'airbrush': {
+      // 噴槍：柔和的放射狀霧化，壓感控制強度
+      ctx.fillStyle = stroke.color;
+      for (let i = 1; i < stroke.points.length; i++) {
+        const p0 = stroke.points[i - 1], p1 = stroke.points[i];
+        const dist = Math.hypot(p1.x - p0.x, p1.y - p0.y);
+        const steps = Math.max(1, Math.floor(dist / 5));
+        const pr = (p0.pressure + p1.pressure) / 2;
+        const radius = stroke.size * (1.8 + pr * 0.8);
+
+        for (let s = 0; s <= steps; s++) {
+          const t = s / steps;
+          const cx = p0.x + (p1.x - p0.x) * t;
+          const cy = p0.y + (p1.y - p0.y) * t;
+
+          // 柔和的高斯漸層噴霧
+          ctx.save();
+          ctx.globalAlpha = stroke.opacity * 0.045 * (0.5 + pr * 0.7);
+          const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius);
+          grad.addColorStop(0, stroke.color);
+          grad.addColorStop(0.4, stroke.color);
+          grad.addColorStop(1, stroke.color + '00');
+          ctx.fillStyle = grad;
+          ctx.beginPath(); ctx.arc(cx, cy, radius, 0, Math.PI * 2); ctx.fill();
+          ctx.restore();
+
+          // 細微顆粒（讓霧感更真實）
+          const particleCount = Math.floor(radius * 0.8 * pr);
+          for (let p = 0; p < particleCount; p++) {
+            const angle = Math.random() * Math.PI * 2;
+            const r = Math.pow(Math.random(), 1.8) * radius;
+            ctx.save();
+            ctx.globalAlpha = stroke.opacity * 0.06 * (1 - r / radius) * pr;
+            ctx.beginPath();
+            ctx.arc(cx + r * Math.cos(angle), cy + r * Math.sin(angle),
+              Math.random() * 0.6 + 0.15, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+          }
+        }
+      }
+      break;
+    }
+  }
+  ctx.restore();
+}
+
+// ─── 底層 Canvas 初始化（網格 + 簽名區）──────────────────────────────────────
+function drawBackground(ctx: CanvasRenderingContext2D, w: number, h: number, dpr: number) {
+  ctx.save();
+  ctx.scale(dpr, dpr);
+  ctx.fillStyle = '#FFFFFF';
+  ctx.fillRect(0, 0, w, h);
+
+  ctx.strokeStyle = '#EEEEEF';
+  ctx.lineWidth = 0.5;
+  for (let x = 40; x < w; x += 40) {
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+  }
+  for (let y = 40; y < h; y += 40) {
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+  }
+
+  const sigY = h - 120, sigX = 80, sigW = w - 160, sigH = 80;
+  ctx.save();
+  ctx.setLineDash([6, 4]);
+  ctx.strokeStyle = '#D1D5DB';
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(sigX, sigY, sigW, sigH);
+  ctx.restore();
+  ctx.fillStyle = '#9CA3AF';
+  ctx.font = 'bold 12px -apple-system, sans-serif';
+  ctx.fillText('請在此處簽名 / Sign Here', sigX + 15, sigY + 30);
+  ctx.font = '10px -apple-system, sans-serif';
+  ctx.fillStyle = '#D1D5DB';
+  ctx.fillText('(系統會自動套用最適合簽名的 2pt 針筆與防震機制)', sigX + 15, sigY + 50);
+  ctx.restore();
+}
+
+// ─── 主元件 ──────────────────────────────────────────────────────────────────
 export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
-  currentTool,
-  brushSettings,
-  currentColor,
-  canvasZoom,
-  canvasPan,
-  setCanvasZoom,
-  setCanvasPan,
-  onStrokeCompleted,
-  strokes,
-  onTriggerSignatureMode,
+  currentTool, brushSettings, currentColor,
+  canvasZoom, canvasPan, setCanvasZoom, setCanvasPan,
+  onStrokeCompleted, strokes, onTriggerSignatureMode,
 }) => {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const baseCanvasRef = useRef<HTMLCanvasElement | null>(null); // 底層：背景 + 完成筆觸
+  const liveCanvasRef = useRef<HTMLCanvasElement | null>(null); // 上層：當前筆觸
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   const isDrawing = useRef(false);
   const lastPoint = useRef<StrokePoint | null>(null);
   const currentPoints = useRef<StrokePoint[]>([]);
+  // 上層 canvas 只保留最後幾個點，增量繪製
+  const lastRenderedIdx = useRef(0);
 
-  // 分開追蹤：只追蹤 touch 手指，不包含 pen
   const touchPointers = useRef<Map<number, { x: number; y: number }>>(new Map());
   const lastPinchDist = useRef<number | null>(null);
   const lastPinchMid = useRef<{ x: number; y: number } | null>(null);
   const isPanning = useRef(false);
   const panStart = useRef({ x: 0, y: 0 });
 
-  const [pointerPos, setPointerPos] = useState({ x: 0, y: 0 });
   const [showPointer, setShowPointer] = useState(false);
+  const [pointerPos, setPointerPos] = useState({ x: 0, y: 0 });
 
   const zoomRef = useRef(canvasZoom);
   const panRef = useRef(canvasPan);
   useEffect(() => { zoomRef.current = canvasZoom; }, [canvasZoom]);
   useEffect(() => { panRef.current = canvasPan; }, [canvasPan]);
 
-  // 高解析度畫布：用設備像素比放大 canvas，再用 CSS 縮回來
   const DPR = typeof window !== 'undefined' ? Math.min(window.devicePixelRatio || 2, 3) : 2;
   const baseWidth = 1366;
   const baseHeight = 1024;
   const physW = baseWidth * DPR;
   const physH = baseHeight * DPR;
 
-  // ─── 畫布渲染 ───────────────────────────────────────────────────────────────
-  const drawCanvas = useCallback(() => {
-    const canvas = canvasRef.current;
+  // ── 初始化底層 canvas（背景）─────────────────────────────────────────────
+  useEffect(() => {
+    const canvas = baseCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d', { desynchronized: true });
+    if (!ctx) return;
+    ctx.clearRect(0, 0, physW, physH);
+    drawBackground(ctx, baseWidth, baseHeight, DPR);
+  }, [DPR, physW, physH]);
+
+  // ── 當 strokes 更新時，把最新的一筆畫到底層 ─────────────────────────────
+  // （新增筆觸時只畫最後一筆，不重畫所有筆觸）
+  const lastStrokeCount = useRef(0);
+  useEffect(() => {
+    const canvas = baseCanvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d', { desynchronized: true });
     if (!ctx) return;
 
-    ctx.save();
-    ctx.scale(DPR, DPR);
-    ctx.clearRect(0, 0, baseWidth, baseHeight);
-    ctx.fillStyle = '#FFFFFF';
-    ctx.fillRect(0, 0, baseWidth, baseHeight);
-
-    // Grid（細線）
-    ctx.strokeStyle = '#EEEEEF';
-    ctx.lineWidth = 0.5;
-    for (let x = 40; x < baseWidth; x += 40) {
-      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, baseHeight); ctx.stroke();
+    if (strokes.length < lastStrokeCount.current) {
+      // Undo 發生：完整重畫底層
+      ctx.clearRect(0, 0, physW, physH);
+      drawBackground(ctx, baseWidth, baseHeight, DPR);
+      strokes.forEach(s => renderStrokeToCtx(ctx, s, DPR));
+    } else if (strokes.length > lastStrokeCount.current) {
+      // 新增筆觸：只畫最後一筆
+      const latest = strokes[strokes.length - 1];
+      renderStrokeToCtx(ctx, latest, DPR);
     }
-    for (let y = 40; y < baseHeight; y += 40) {
-      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(baseWidth, y); ctx.stroke();
-    }
+    lastStrokeCount.current = strokes.length;
+  }, [strokes, DPR, physW, physH]);
 
-    // 簽名區
-    const sigY = baseHeight - 120, sigX = 80, sigW = baseWidth - 160, sigH = 80;
-    ctx.save();
-    ctx.setLineDash([6, 4]);
-    ctx.strokeStyle = '#D1D5DB';
-    ctx.lineWidth = 1.5;
-    ctx.strokeRect(sigX, sigY, sigW, sigH);
-    ctx.restore();
-    ctx.fillStyle = '#9CA3AF';
-    ctx.font = 'bold 12px -apple-system, sans-serif';
-    ctx.fillText('請在此處簽名 / Sign Here', sigX + 15, sigY + 30);
-    ctx.font = '10px -apple-system, sans-serif';
-    ctx.fillStyle = '#D1D5DB';
-    ctx.fillText('(系統會自動套用最適合簽名的 2pt 針筆與防震機制)', sigX + 15, sigY + 50);
+  // ── 即時繪製上層（增量）────────────────────────────────────────────────
+  const drawLiveStroke = useCallback(() => {
+    const canvas = liveCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d', { desynchronized: true, alpha: true });
+    if (!ctx) return;
 
-    strokes.forEach(stroke => renderStroke(ctx, stroke));
+    const pts = currentPoints.current;
+    const startIdx = lastRenderedIdx.current;
+    if (pts.length < 2 || startIdx >= pts.length - 1) return;
 
-    if (isDrawing.current && currentPoints.current.length > 0) {
-      renderStroke(ctx, {
-        points: currentPoints.current,
-        color: currentTool === 'eraser' ? '#FFFFFF' : currentColor,
-        tool: currentTool,
-        size: brushSettings[currentTool].size,
-        opacity: brushSettings[currentTool].opacity,
-        stabilizer: brushSettings[currentTool].stabilizer,
-      });
-    }
-    ctx.restore();
-  }, [strokes, currentColor, currentTool, brushSettings, DPR]);
+    // 只繪製新增的片段
+    const segment: StrokePoint[] = pts.slice(Math.max(0, startIdx), pts.length);
+    renderStrokeToCtx(ctx, {
+      points: segment,
+      color: currentTool === 'eraser' ? '#FFFFFF' : currentColor,
+      tool: currentTool,
+      size: brushSettings[currentTool].size,
+      opacity: brushSettings[currentTool].opacity,
+      stabilizer: brushSettings[currentTool].stabilizer,
+    }, DPR);
 
-  const renderStroke = (ctx: CanvasRenderingContext2D, stroke: Stroke) => {
-    if (stroke.points.length === 0) return;
-    ctx.save();
-    ctx.globalAlpha = stroke.opacity;
+    lastRenderedIdx.current = pts.length - 1;
+  }, [currentColor, currentTool, brushSettings, DPR]);
 
-    if (['pen', 'eraser', 'pencil'].includes(stroke.tool)) {
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-      ctx.strokeStyle = stroke.color;
-
-      if (stroke.points.length === 1) {
-        ctx.beginPath();
-        ctx.fillStyle = stroke.color;
-        ctx.arc(stroke.points[0].x, stroke.points[0].y, stroke.size / 2, 0, Math.PI * 2);
-        ctx.fill();
-      } else {
-        for (let i = 1; i < stroke.points.length; i++) {
-          const p1 = stroke.points[i - 1], p2 = stroke.points[i];
-          const sz = stroke.size * (0.4 + p2.pressure * 0.8);
-          ctx.beginPath();
-          ctx.lineWidth = sz;
-          if (stroke.tool === 'pencil') {
-            ctx.lineWidth = sz * 0.85;
-            ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
-            const dist = Math.hypot(p2.x - p1.x, p2.y - p1.y);
-            const steps = Math.max(1, Math.floor(dist / 2));
-            ctx.fillStyle = stroke.color;
-            for (let s = 0; s <= steps; s++) {
-              const t = s / steps;
-              const px = p1.x + (p2.x - p1.x) * t + (Math.random() * 2 - 1) * sz * 0.45;
-              const py = p1.y + (p2.y - p1.y) * t + (Math.random() * 2 - 1) * sz * 0.45;
-              ctx.save();
-              ctx.globalAlpha = stroke.opacity * (Math.random() * 0.35 + 0.1);
-              ctx.beginPath(); ctx.arc(px, py, Math.random() * 0.6 + 0.3, 0, Math.PI * 2); ctx.fill();
-              ctx.restore();
-            }
-          } else {
-            ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
-          }
-        }
-      }
-    } else if (stroke.tool === 'crayon') {
-      ctx.fillStyle = stroke.color;
-      for (let i = 1; i < stroke.points.length; i++) {
-        const p1 = stroke.points[i - 1], p2 = stroke.points[i];
-        const dist = Math.hypot(p2.x - p1.x, p2.y - p1.y);
-        const steps = Math.max(1, Math.floor(dist / 1.5));
-        for (let s = 0; s <= steps; s++) {
-          const t = s / steps;
-          const x = p1.x + (p2.x - p1.x) * t, y = p1.y + (p2.y - p1.y) * t;
-          const pr = p1.pressure + (p2.pressure - p1.pressure) * t;
-          const count = Math.max(4, Math.floor(stroke.size * 1.5));
-          for (let p = 0; p < count; p++) {
-            const u1 = Math.random() || 0.0001, u2 = Math.random() || 0.0001;
-            const r = Math.sqrt(-2 * Math.log(u1)) * (stroke.size * 0.45);
-            const theta = 2 * Math.PI * u2;
-            ctx.save();
-            ctx.globalAlpha = stroke.opacity * (Math.random() * 0.45 + 0.05);
-            ctx.beginPath();
-            ctx.arc(x + r * Math.cos(theta), y + r * Math.sin(theta), (Math.random() * 0.8 + 0.3) * (0.5 + pr * 0.5), 0, Math.PI * 2);
-            ctx.fill();
-            ctx.restore();
-          }
-        }
-      }
-    } else if (stroke.tool === 'watercolor') {
-      const radius = stroke.size * 1.5;
-      for (let i = 1; i < stroke.points.length; i++) {
-        const p1 = stroke.points[i - 1], p2 = stroke.points[i];
-        const dist = Math.hypot(p2.x - p1.x, p2.y - p1.y);
-        const steps = Math.max(1, Math.floor(dist / 3));
-        for (let s = 0; s <= steps; s++) {
-          const t = s / steps;
-          const x = p1.x + (p2.x - p1.x) * t, y = p1.y + (p2.y - p1.y) * t;
-          const pr = p1.pressure + (p2.pressure - p1.pressure) * t;
-          const cr = radius * (0.8 + pr * 0.4);
-          ctx.save();
-          ctx.globalAlpha = stroke.opacity * 0.08;
-          const grad = ctx.createRadialGradient(x, y, cr * 0.1, x, y, cr);
-          grad.addColorStop(0, stroke.color); grad.addColorStop(0.85, stroke.color); grad.addColorStop(1, 'transparent');
-          ctx.fillStyle = grad;
-          ctx.beginPath(); ctx.arc(x, y, cr, 0, Math.PI * 2); ctx.fill();
-          ctx.restore();
-        }
-      }
-    } else if (stroke.tool === 'airbrush') {
-      const radius = stroke.size * 2.5;
-      ctx.fillStyle = stroke.color;
-      for (let i = 1; i < stroke.points.length; i++) {
-        const p1 = stroke.points[i - 1], p2 = stroke.points[i];
-        const dist = Math.hypot(p2.x - p1.x, p2.y - p1.y);
-        const steps = Math.max(1, Math.floor(dist / 4));
-        for (let s = 0; s <= steps; s++) {
-          const t = s / steps;
-          const x = p1.x + (p2.x - p1.x) * t, y = p1.y + (p2.y - p1.y) * t;
-          const pr = p1.pressure + (p2.pressure - p1.pressure) * t;
-          const density = Math.floor(radius * 1.5 * (0.5 + pr * 0.5));
-          for (let p = 0; p < density; p++) {
-            const rVal = Math.pow(Math.random(), 1.5) * radius;
-            const heading = Math.random() * Math.PI * 2;
-            ctx.save();
-            ctx.globalAlpha = stroke.opacity * 0.12 * (1 - rVal / radius);
-            ctx.beginPath();
-            ctx.arc(x + rVal * Math.cos(heading), y + rVal * Math.sin(heading), Math.random() * 1.2 + 0.4, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.restore();
-          }
-        }
-      }
-    }
-    ctx.restore();
+  // 清空上層
+  const clearLiveCanvas = () => {
+    const canvas = liveCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.clearRect(0, 0, physW, physH);
   };
 
-  useEffect(() => { drawCanvas(); }, [drawCanvas]);
-
-  // ─── 座標轉換 ────────────────────────────────────────────────────────────────
+  // ── 座標轉換 ────────────────────────────────────────────────────────────
   const getCanvasCoords = (clientX: number, clientY: number) => {
-    const canvas = canvasRef.current;
+    const canvas = baseCanvasRef.current;
     if (!canvas) return { x: 0, y: 0 };
     const rect = canvas.getBoundingClientRect();
     return {
@@ -240,197 +358,38 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   const applySmoothing = (nx: number, ny: number, strength: 'none' | 'low' | 'high') => {
     if (currentPoints.current.length === 0) return { x: nx, y: ny };
     const last = currentPoints.current[currentPoints.current.length - 1];
-    const factor = strength === 'high' ? 0.18 : strength === 'low' ? 0.5 : 1.0;
-    return { x: last.x + (nx - last.x) * factor, y: last.y + (ny - last.y) * factor };
+    const f = strength === 'high' ? 0.2 : strength === 'low' ? 0.55 : 1.0;
+    return { x: last.x + (nx - last.x) * f, y: last.y + (ny - last.y) * f };
   };
 
-  const calculatePressure = (nx: number, ny: number, time: number) => {
-    if (!lastPoint.current) return 0.5;
-    const dist = Math.hypot(nx - lastPoint.current.x, ny - lastPoint.current.y);
-    const dt = Math.max(1, time - lastPoint.current.time);
-    const speed = dist / dt;
-    const p = Math.max(0.1, 1.0 - Math.min(speed / 3.5, 0.8));
-    return lastPoint.current.pressure + (p - lastPoint.current.pressure) * 0.35;
-  };
-
-  // ─── Pointer handlers ────────────────────────────────────────────────────────
-  // 核心規則：
-  //   pen (Apple Pencil) → 永遠畫圖，完全不影響 touch 邏輯
-  //   touch 單指         → 平移
-  //   touch 雙指         → 捏合縮放
-  //   mouse              → 畫圖（電腦測試用）
-
-  const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    // ── Apple Pencil ──
-    if (e.pointerType === 'pen') {
-      try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {}
-      isDrawing.current = true;
-      isPanning.current = false; // 確保平移不會同時觸發
-      const coords = getCanvasCoords(e.clientX, e.clientY);
-      const time = Date.now();
-      const pressure = e.pressure > 0 ? e.pressure : 0.5;
-      currentPoints.current = [{ x: coords.x, y: coords.y, pressure, time }];
-      lastPoint.current = { x: coords.x, y: coords.y, pressure, time };
-      hapticFeedback.playTap('selection');
-      drawCanvas();
-      return;
-    }
-
-    // ── 手指觸控 ──
-    if (e.pointerType === 'touch') {
-      // 手指絕對不畫圖
-      if (isDrawing.current && !touchPointers.current.size) {
-        // pen 正在畫圖時手指觸控不干擾
-      }
-      touchPointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-      const touchCount = touchPointers.current.size;
-
-      if (touchCount === 1) {
-        // 單指開始平移
-        isPanning.current = true;
-        panStart.current = { x: e.clientX - panRef.current.x, y: e.clientY - panRef.current.y };
-      } else {
-        // 雙指：停止單指平移，準備捏合
-        isPanning.current = false;
-        lastPinchDist.current = null;
-        lastPinchMid.current = null;
-      }
-      return;
-    }
-
-    // ── 滑鼠右/中鍵 → 平移 ──
-    if (e.button === 1 || e.button === 2) {
-      isPanning.current = true;
-      panStart.current = { x: e.clientX - panRef.current.x, y: e.clientY - panRef.current.y };
-      return;
-    }
-
-    // ── 滑鼠左鍵 → 畫圖 ──
-    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {}
+  // ── Pointer Handlers ─────────────────────────────────────────────────────
+  const startDraw = (clientX: number, clientY: number, pressure: number) => {
     isDrawing.current = true;
-    const coords = getCanvasCoords(e.clientX, e.clientY);
+    isPanning.current = false;
+    const coords = getCanvasCoords(clientX, clientY);
     const time = Date.now();
-    currentPoints.current = [{ x: coords.x, y: coords.y, pressure: 0.5, time }];
-    lastPoint.current = { x: coords.x, y: coords.y, pressure: 0.5, time };
+    currentPoints.current = [{ x: coords.x, y: coords.y, pressure, time }];
+    lastPoint.current = { x: coords.x, y: coords.y, pressure, time };
+    lastRenderedIdx.current = 0;
+    clearLiveCanvas();
     hapticFeedback.playTap('selection');
-    drawCanvas();
   };
 
-  const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    const coords = getCanvasCoords(e.clientX, e.clientY);
-
-    // ── Apple Pencil 畫圖 ──
-    if (e.pointerType === 'pen') {
-      setPointerPos(coords);
-      if (!isDrawing.current) return;
-      const time = Date.now();
-      const smoothed = applySmoothing(coords.x, coords.y, brushSettings[currentTool].stabilizer);
-      const pressure = e.pressure > 0 ? e.pressure : (lastPoint.current?.pressure ?? 0.5);
-      const point: StrokePoint = { x: smoothed.x, y: smoothed.y, pressure, time };
-      currentPoints.current.push(point);
-      lastPoint.current = point;
-      drawCanvas();
-      return;
-    }
-
-    // ── 手指觸控 ──
-    if (e.pointerType === 'touch') {
-      touchPointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-      const touchCount = touchPointers.current.size;
-
-      if (touchCount >= 2) {
-        // 雙指捏合縮放
-        isPanning.current = false;
-        const pts = [...touchPointers.current.values()];
-        const dx = pts[1].x - pts[0].x, dy = pts[1].y - pts[0].y;
-        const dist = Math.hypot(dx, dy);
-        const mid = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 };
-        if (lastPinchDist.current !== null && lastPinchMid.current !== null) {
-          const scale = dist / lastPinchDist.current;
-          setCanvasZoom(Math.max(0.1, Math.min(10, zoomRef.current * scale)));
-          setCanvasPan({
-            x: panRef.current.x + mid.x - lastPinchMid.current.x,
-            y: panRef.current.y + mid.y - lastPinchMid.current.y,
-          });
-        }
-        lastPinchDist.current = dist;
-        lastPinchMid.current = mid;
-        return;
-      }
-
-      // 單指平移
-      if (isPanning.current) {
-        setCanvasPan({ x: e.clientX - panStart.current.x, y: e.clientY - panStart.current.y });
-      }
-      return;
-    }
-
-    // ── 滑鼠平移 ──
-    if (isPanning.current) {
-      setPointerPos(coords);
-      setCanvasPan({ x: e.clientX - panStart.current.x, y: e.clientY - panStart.current.y });
-      return;
-    }
-
-    // ── 滑鼠畫圖 ──
-    setPointerPos(coords);
+  const continueDraw = (clientX: number, clientY: number, pressure: number) => {
     if (!isDrawing.current) return;
+    const coords = getCanvasCoords(clientX, clientY);
     const time = Date.now();
     const smoothed = applySmoothing(coords.x, coords.y, brushSettings[currentTool].stabilizer);
-    const pressure = calculatePressure(smoothed.x, smoothed.y, time);
     const point: StrokePoint = { x: smoothed.x, y: smoothed.y, pressure, time };
     currentPoints.current.push(point);
     lastPoint.current = point;
-    drawCanvas();
+    drawLiveStroke();
   };
 
-  const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    // ── Apple Pencil 結束畫圖 ──
-    if (e.pointerType === 'pen') {
-      try { e.currentTarget.releasePointerCapture(e.pointerId); } catch (_) {}
-      if (!isDrawing.current) return;
-      isDrawing.current = false;
-      if (currentPoints.current.length > 0) {
-        onStrokeCompleted({
-          points: [...currentPoints.current],
-          color: currentTool === 'eraser' ? '#FFFFFF' : currentColor,
-          tool: currentTool,
-          size: brushSettings[currentTool].size,
-          opacity: brushSettings[currentTool].opacity,
-          stabilizer: brushSettings[currentTool].stabilizer,
-        });
-        hapticFeedback.playTap('light');
-      }
-      currentPoints.current = [];
-      lastPoint.current = null;
-      drawCanvas();
-      return;
-    }
-
-    // ── 手指抬起 ──
-    if (e.pointerType === 'touch') {
-      touchPointers.current.delete(e.pointerId);
-      const remaining = touchPointers.current.size;
-      if (remaining === 0) {
-        isPanning.current = false;
-        lastPinchDist.current = null;
-        lastPinchMid.current = null;
-      } else if (remaining === 1) {
-        // 從雙指回到單指，重新設定平移起點
-        lastPinchDist.current = null;
-        lastPinchMid.current = null;
-        const pt = [...touchPointers.current.values()][0];
-        isPanning.current = true;
-        panStart.current = { x: pt.x - panRef.current.x, y: pt.y - panRef.current.y };
-      }
-      return;
-    }
-
-    // ── 滑鼠結束 ──
-    try { e.currentTarget.releasePointerCapture(e.pointerId); } catch (_) {}
-    if (isPanning.current) { isPanning.current = false; return; }
+  const endDraw = () => {
     if (!isDrawing.current) return;
     isDrawing.current = false;
+    clearLiveCanvas();
     if (currentPoints.current.length > 0) {
       onStrokeCompleted({
         points: [...currentPoints.current],
@@ -440,28 +399,111 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
         opacity: brushSettings[currentTool].opacity,
         stabilizer: brushSettings[currentTool].stabilizer,
       });
+      hapticFeedback.playTap('light');
     }
     currentPoints.current = [];
     lastPoint.current = null;
-    drawCanvas();
+    lastRenderedIdx.current = 0;
+  };
+
+  const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.pointerType === 'pen') {
+      try { (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); } catch (_) {}
+      startDraw(e.clientX, e.clientY, e.pressure > 0 ? e.pressure : 0.5);
+      return;
+    }
+    if (e.pointerType === 'touch') {
+      touchPointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (touchPointers.current.size === 1) {
+        isPanning.current = true;
+        panStart.current = { x: e.clientX - panRef.current.x, y: e.clientY - panRef.current.y };
+      } else {
+        isPanning.current = false;
+        lastPinchDist.current = null;
+        lastPinchMid.current = null;
+      }
+      return;
+    }
+    // 滑鼠
+    if (e.button === 1 || e.button === 2) {
+      isPanning.current = true;
+      panStart.current = { x: e.clientX - panRef.current.x, y: e.clientY - panRef.current.y };
+      return;
+    }
+    try { (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); } catch (_) {}
+    startDraw(e.clientX, e.clientY, 0.5);
+  };
+
+  const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.pointerType === 'pen') {
+      const coords = getCanvasCoords(e.clientX, e.clientY);
+      setPointerPos(coords);
+      continueDraw(e.clientX, e.clientY, e.pressure > 0 ? e.pressure : (lastPoint.current?.pressure ?? 0.5));
+      return;
+    }
+    if (e.pointerType === 'touch') {
+      touchPointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (touchPointers.current.size >= 2) {
+        isPanning.current = false;
+        const pts = [...touchPointers.current.values()];
+        const dx = pts[1].x - pts[0].x, dy = pts[1].y - pts[0].y;
+        const dist = Math.hypot(dx, dy);
+        const mid = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 };
+        if (lastPinchDist.current !== null && lastPinchMid.current !== null) {
+          setCanvasZoom(Math.max(0.1, Math.min(10, zoomRef.current * (dist / lastPinchDist.current))));
+          setCanvasPan({
+            x: panRef.current.x + mid.x - lastPinchMid.current.x,
+            y: panRef.current.y + mid.y - lastPinchMid.current.y,
+          });
+        }
+        lastPinchDist.current = dist;
+        lastPinchMid.current = mid;
+        return;
+      }
+      if (isPanning.current) {
+        setCanvasPan({ x: e.clientX - panStart.current.x, y: e.clientY - panStart.current.y });
+      }
+      return;
+    }
+    // 滑鼠
+    const coords = getCanvasCoords(e.clientX, e.clientY);
+    setPointerPos(coords);
+    if (isPanning.current) {
+      setCanvasPan({ x: e.clientX - panStart.current.x, y: e.clientY - panStart.current.y });
+      return;
+    }
+    continueDraw(e.clientX, e.clientY, 0.5);
+  };
+
+  const handlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.pointerType === 'pen') {
+      try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch (_) {}
+      endDraw();
+      return;
+    }
+    if (e.pointerType === 'touch') {
+      touchPointers.current.delete(e.pointerId);
+      const remaining = touchPointers.current.size;
+      lastPinchDist.current = null;
+      lastPinchMid.current = null;
+      if (remaining === 0) {
+        isPanning.current = false;
+      } else if (remaining === 1) {
+        const pt = [...touchPointers.current.values()][0];
+        isPanning.current = true;
+        panStart.current = { x: pt.x - panRef.current.x, y: pt.y - panRef.current.y };
+      }
+      return;
+    }
+    try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch (_) {}
+    if (isPanning.current) { isPanning.current = false; return; }
+    endDraw();
   };
 
   const handleWheel = (e: React.WheelEvent<HTMLDivElement>) => {
     e.preventDefault();
     const factor = 1.1;
-    const newZoom = e.deltaY < 0
-      ? Math.min(10, canvasZoom * factor)
-      : Math.max(0.1, canvasZoom / factor);
-    setCanvasZoom(newZoom);
-  };
-
-  const adjustZoom = (mult: number) => {
-    setCanvasZoom(Math.max(0.1, Math.min(10, canvasZoom * mult)));
-  };
-
-  const resetView = () => {
-    setCanvasZoom(1.0);
-    setCanvasPan({ x: 0, y: 0 });
+    setCanvasZoom(e.deltaY < 0 ? Math.min(10, canvasZoom * factor) : Math.max(0.1, canvasZoom / factor));
   };
 
   return (
@@ -469,79 +511,86 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       ref={containerRef}
       className="relative flex-1 h-full w-full bg-[#1e1e1e] overflow-hidden flex items-center justify-center select-none"
       onWheel={handleWheel}
-      id="canvas-workspace"
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onPointerCancel={handlePointerUp}
+      onMouseEnter={() => setShowPointer(true)}
+      onMouseLeave={() => setShowPointer(false)}
+      style={{ touchAction: 'none' }}
     >
       {/* 縮放控制 */}
       <div className="absolute bottom-6 right-6 z-20 flex bg-[#2c2c2e]/90 text-white rounded-xl shadow-lg border border-white/5 items-center backdrop-blur-md p-1">
-        <button onClick={() => adjustZoom(1 / 1.2)} className="px-3 py-2 text-sm font-semibold hover:bg-white/10 rounded-lg active:scale-95 transition-all text-gray-300 hover:text-white">-</button>
-        <span className="px-2 text-xs font-mono text-gray-300 min-w-[55px] text-center cursor-pointer hover:text-white" onClick={resetView}>
+        <button onClick={() => setCanvasZoom(Math.max(0.1, canvasZoom / 1.2))} className="px-3 py-2 text-sm font-semibold hover:bg-white/10 rounded-lg active:scale-95 text-gray-300 hover:text-white">-</button>
+        <span className="px-2 text-xs font-mono text-gray-300 min-w-[55px] text-center cursor-pointer" onClick={() => { setCanvasZoom(1); setCanvasPan({ x: 0, y: 0 }); }}>
           {Math.round(canvasZoom * 100)}%
         </span>
-        <button onClick={() => adjustZoom(1.2)} className="px-3 py-2 text-sm font-semibold hover:bg-white/10 rounded-lg active:scale-95 transition-all text-gray-300 hover:text-white">+</button>
+        <button onClick={() => setCanvasZoom(Math.min(10, canvasZoom * 1.2))} className="px-3 py-2 text-sm font-semibold hover:bg-white/10 rounded-lg active:scale-95 text-gray-300 hover:text-white">+</button>
         <div className="h-4 w-[1px] bg-white/10 mx-1" />
-        <button onClick={resetView} className="px-3 py-2 text-xs text-cyan-400 hover:bg-white/10 rounded-lg transition-all">重設</button>
+        <button onClick={() => { setCanvasZoom(1); setCanvasPan({ x: 0, y: 0 }); }} className="px-3 py-2 text-xs text-cyan-400 hover:bg-white/10 rounded-lg">重設</button>
       </div>
 
       {/* 簽名快捷 */}
       <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-20">
         <button
           onClick={onTriggerSignatureMode}
-          className="flex items-center gap-2 bg-[#2c2c2e]/90 hover:bg-cyan-600/20 text-cyan-400 border border-cyan-500/30 px-4 py-2.5 rounded-full text-xs font-semibold shadow-xl backdrop-blur-md hover:scale-105 active:scale-95 transition-all"
+          className="flex items-center gap-2 bg-[#2c2c2e]/90 hover:bg-cyan-600/20 text-cyan-400 border border-cyan-500/30 px-4 py-2.5 rounded-full text-xs font-semibold shadow-xl backdrop-blur-md active:scale-95 transition-all"
         >
           <Edit3 size={14} />
           快速跳轉到簽名模式
         </button>
       </div>
 
-      {/* 畫布 wrapper */}
+      {/* 雙層 Canvas 容器 */}
       <div
         style={{
           transform: `translate(${canvasPan.x}px, ${canvasPan.y}px) scale(${canvasZoom})`,
           width: `${baseWidth}px`,
           height: `${baseHeight}px`,
+          position: 'relative',
           willChange: 'transform',
         }}
       >
-        {/* 高解析度 canvas：物理尺寸 physW×physH，CSS 顯示 baseWidth×baseHeight */}
+        {/* 底層：背景 + 已完成筆觸 */}
         <canvas
           id="drawing-canvas-board"
-          ref={canvasRef}
+          ref={baseCanvasRef}
           width={physW}
           height={physH}
-          className="bg-white rounded-lg shadow-[0_12px_45px_rgba(0,0,0,0.55)] cursor-crosshair border border-black/10 select-none"
           style={{
-            width: `${baseWidth}px`,
-            height: `${baseHeight}px`,
+            position: 'absolute', top: 0, left: 0,
+            width: `${baseWidth}px`, height: `${baseHeight}px`,
+            borderRadius: '8px',
+            boxShadow: '0 12px 45px rgba(0,0,0,0.55)',
             touchAction: 'none',
           }}
-          onPointerDown={handlePointerDown}
-          onPointerMove={handlePointerMove}
-          onPointerUp={handlePointerUp}
-          onPointerCancel={handlePointerUp}
-          onMouseEnter={() => setShowPointer(true)}
-          onMouseLeave={() => setShowPointer(false)}
+        />
+        {/* 上層：當前進行中的筆觸（透明背景） */}
+        <canvas
+          ref={liveCanvasRef}
+          width={physW}
+          height={physH}
+          style={{
+            position: 'absolute', top: 0, left: 0,
+            width: `${baseWidth}px`, height: `${baseHeight}px`,
+            borderRadius: '8px',
+            pointerEvents: 'none',
+            touchAction: 'none',
+          }}
         />
 
         {/* 筆刷預覽圓圈 */}
         {showPointer && currentTool === 'eraser' && (
-          <div
-            className="absolute rounded-full pointer-events-none border border-black/40 bg-white/30 z-30"
-            style={{
-              left: `${pointerPos.x}px`, top: `${pointerPos.y}px`,
+          <div className="absolute rounded-full pointer-events-none border border-black/40 bg-white/30 z-30"
+            style={{ left: `${pointerPos.x}px`, top: `${pointerPos.y}px`,
               width: `${brushSettings.eraser.size}px`, height: `${brushSettings.eraser.size}px`,
-              transform: 'translate(-50%, -50%)',
-            }}
-          />
+              transform: 'translate(-50%, -50%)' }} />
         )}
-        {showPointer && ['pen', 'pencil', 'crayon', 'watercolor', 'airbrush'].includes(currentTool) && (
-          <div
-            className="absolute rounded-full pointer-events-none border border-gray-400/40 bg-zinc-500/10 z-30"
-            style={{
-              left: `${pointerPos.x}px`, top: `${pointerPos.y}px`,
+        {showPointer && ['pen','pencil','crayon','watercolor','airbrush'].includes(currentTool) && (
+          <div className="absolute rounded-full pointer-events-none border border-gray-400/40 bg-zinc-500/10 z-30"
+            style={{ left: `${pointerPos.x}px`, top: `${pointerPos.y}px`,
               width: `${brushSettings[currentTool].size}px`, height: `${brushSettings[currentTool].size}px`,
-              transform: 'translate(-50%, -50%)',
-            }}
-          />
+              transform: 'translate(-50%, -50%)' }} />
         )}
       </div>
     </div>
