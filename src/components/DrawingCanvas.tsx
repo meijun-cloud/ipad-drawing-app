@@ -141,24 +141,61 @@ function renderStrokeToCtx(ctx: CanvasRenderingContext2D, stroke: Stroke, dpr: n
       break;
     }
 
-    // ── 6B 粉蠟筆：由內而外均勻顆粒分布，無實心核心，純顆粒質感 ──────────
-    // 參考圖二：顆粒從中心到邊緣均勻分布，輕壓稀疏、重壓密集
-    // 關鍵：用均勻分布而非冪次分布，讓顆粒在整個筆觸截面都有
+    // ── 6B 粉蠟筆：由內而外均勻顆粒，細筆觸不斷裂 ─────────────────────────
     case 'crayon': {
       ctx.fillStyle = stroke.color;
 
       for (let i = 1; i < stroke.points.length; i++) {
         const p0 = stroke.points[i - 1], p1 = stroke.points[i];
         const dist = Math.hypot(p1.x - p0.x, p1.y - p0.y);
-        if (dist < 0.3) continue;
 
         const pr = (p0.pressure + p1.pressure) / 2;
-        // 壓力大幅影響半徑（6B特徵：輕壓細，重壓粗）
         const sz = stroke.size * (0.3 + pr * 0.85);
-        // 顆粒密度：由壓力決定，輕壓稀疏，重壓密集
-        const grainDensity = 0.12 + pr * 0.72; // 輕壓12%，重壓84%
 
-        // 步進間距：密，讓筆觸連續不斷裂
+        // ── 細筆觸修正（size <= 6）：改用連續實線 + 輕薄顆粒疊加 ──
+        // 原因：sz 很小時顆粒太少、間距太大，造成斷點
+        if (stroke.size <= 6) {
+          // 主線：連續貝茲，保證不斷裂
+          ctx.save();
+          ctx.lineCap = 'round';
+          ctx.lineJoin = 'round';
+          ctx.strokeStyle = stroke.color;
+          ctx.lineWidth = Math.max(0.5, sz * 0.7);
+          ctx.globalAlpha = stroke.opacity * (0.55 + pr * 0.4);
+          const mx = (p0.x + p1.x) / 2, my = (p0.y + p1.y) / 2;
+          ctx.beginPath();
+          ctx.moveTo(p0.x, p0.y);
+          ctx.quadraticCurveTo(p0.x, p0.y, mx, my);
+          ctx.stroke();
+          ctx.restore();
+
+          // 輕薄顆粒疊加（保留蠟筆質感，但不能讓線斷）
+          if (sz > 1.5) {
+            const spacing = Math.max(0.8, sz * 0.3);
+            const steps = Math.max(1, Math.floor(dist / spacing));
+            for (let s = 0; s <= steps; s++) {
+              const t = s / steps;
+              const cx = p0.x + (p1.x - p0.x) * t;
+              const cy = p0.y + (p1.y - p0.y) * t;
+              const count = Math.max(2, Math.floor(sz * 1.2));
+              for (let g = 0; g < count; g++) {
+                const r = Math.sqrt(Math.random()) * sz * 0.8;
+                const angle = Math.random() * Math.PI * 2;
+                ctx.save();
+                ctx.globalAlpha = stroke.opacity * (Math.random() * 0.18 + 0.04);
+                ctx.beginPath();
+                ctx.arc(cx + r * Math.cos(angle), cy + r * Math.sin(angle),
+                  0.4 + Math.random() * 0.8, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.restore();
+              }
+            }
+          }
+          continue; // 跳過下方大筆觸邏輯
+        }
+
+        // ── 正常大筆觸（size > 6）：純顆粒均勻分布 ──
+        const grainDensity = 0.12 + pr * 0.72;
         const spacing = Math.max(1, sz * 0.25);
         const steps = Math.max(1, Math.floor(dist / spacing));
 
@@ -166,29 +203,18 @@ function renderStrokeToCtx(ctx: CanvasRenderingContext2D, stroke: Stroke, dpr: n
           const t = s / steps;
           const cx = p0.x + (p1.x - p0.x) * t;
           const cy = p0.y + (p1.y - p0.y) * t;
-
-          // 每個步進點的顆粒數量
-          const totalGrains = Math.floor(sz * sz * 0.55 * grainDensity);
+          const totalGrains = Math.max(4, Math.floor(sz * sz * 0.55 * grainDensity));
 
           for (let g = 0; g < totalGrains; g++) {
-            // 均勻分布：sqrt(random) 讓面積均勻（極座標面積補正）
-            // 這樣從圓心到邊緣每個環的顆粒密度一樣 → 由內而外均勻
             const r = Math.sqrt(Math.random()) * sz;
             const angle = Math.random() * Math.PI * 2;
-            const gx = cx + r * Math.cos(angle);
-            const gy = cy + r * Math.sin(angle);
-
-            // 顆粒大小：1.2~2.8px（低頻，6B感），帶隨機變化
             const gr = 1.2 + Math.random() * 1.6;
-
-            // 透明度：中心略高，邊緣略低，但整體差異小（均勻感）
-            const radialFactor = 1 - (r / sz) * 0.38; // 中心1，邊緣0.62
+            const radialFactor = 1 - (r / sz) * 0.38;
             const alpha = stroke.opacity * grainDensity * (0.55 + Math.random() * 0.45) * radialFactor;
-
             ctx.save();
             ctx.globalAlpha = Math.min(stroke.opacity, alpha);
             ctx.beginPath();
-            ctx.arc(gx, gy, gr, 0, Math.PI * 2);
+            ctx.arc(cx + r * Math.cos(angle), cy + r * Math.sin(angle), gr, 0, Math.PI * 2);
             ctx.fill();
             ctx.restore();
           }

@@ -47,8 +47,6 @@ export const ColorPickerView: React.FC<ColorPickerViewProps> = ({
   currentColor, onChangeColor, colorHistory, onClose,
 }) => {
   const hsb = useMemo(() => hexToHSB(currentColor), [currentColor]);
-  const prevColor = useRef(currentColor);
-
   const W = 280;        // 面板寬
   const SB_H = 220;     // 自由選色視窗高度（加高）
   const SLIDER_H = 18;  // 每條滑桿高
@@ -196,8 +194,6 @@ export const ColorPickerView: React.FC<ColorPickerViewProps> = ({
           {/* 目前色 & 前一色 */}
           <div className="w-8 h-8 rounded-lg border border-white/20 flex-shrink-0"
             style={{ background: currentColor }} />
-          <div className="w-8 h-8 rounded-lg border border-white/10 flex-shrink-0"
-            style={{ background: prevColor.current }} />
           <button onClick={() => { onClose(); hapticFeedback.playTap('light'); }}
             className="text-gray-400 hover:text-white p-1 rounded-lg hover:bg-white/5 cursor-pointer ml-1">
             <X size={15} />
@@ -274,29 +270,31 @@ export const ColorPickerView: React.FC<ColorPickerViewProps> = ({
         </div>
       </div>
 
-      {/* ── 歷史記錄 ── */}
+      {/* ── 歷史記錄（固定8格，灰色佔位）── */}
       <div className="mx-4 mt-5 mb-4">
-        <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center mb-2">
           <span className="text-xs text-gray-400">歷史記錄</span>
-          <span className="text-[10px] text-gray-600">最多 10 色</span>
         </div>
         <div className="flex gap-2">
-          {colorHistory.length === 0 ? (
-            <span className="text-[10px] text-gray-600 italic py-1">在畫布作畫後會自動記錄</span>
-          ) : (
-            // 最新在最左邊（App.tsx 已確保 colorHistory[0] 是最新）
-            colorHistory.slice(0, 10).map((color, idx) => (
+          {Array.from({ length: 8 }).map((_, idx) => {
+            const color = colorHistory[idx];
+            return color ? (
               <button
                 key={`${color}-${idx}`}
                 onClick={() => { onChangeColor(color); hapticFeedback.playTap('selection'); }}
-                className="rounded-full border-2 border-white/10 hover:scale-110 active:scale-90 cursor-pointer transition-all flex-shrink-0"
+                className="rounded-full border-2 hover:scale-110 active:scale-90 cursor-pointer transition-all flex-shrink-0"
                 style={{ width:'28px', height:'28px', background: color,
-                  outline: currentColor === color ? '2px solid white' : 'none',
-                  outlineOffset: '1px' }}
+                  borderColor: currentColor === color ? 'white' : 'rgba(255,255,255,0.12)' }}
                 title={color}
               />
-            ))
-          )}
+            ) : (
+              <div
+                key={`empty-${idx}`}
+                className="rounded-full flex-shrink-0"
+                style={{ width:'28px', height:'28px', background:'rgba(255,255,255,0.08)', border:'1.5px solid rgba(255,255,255,0.06)' }}
+              />
+            );
+          })}
         </div>
       </div>
     </div>
