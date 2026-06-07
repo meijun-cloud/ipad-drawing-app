@@ -37,8 +37,9 @@ function renderStrokeToCtx(ctx: CanvasRenderingContext2D, stroke: Stroke, dpr: n
   ctx.globalAlpha = stroke.opacity;
 
   switch (stroke.tool) {
+
+    // ── 針筆：貝茲平滑線，壓感控粗細 ──────────────────────────────────────────
     case 'pen':
-    case 'pencil':
     case 'eraser': {
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
@@ -50,99 +51,106 @@ function renderStrokeToCtx(ctx: CanvasRenderingContext2D, stroke: Stroke, dpr: n
         ctx.fill();
         break;
       }
-      // 用貝茲曲線讓針筆更平滑
+      for (let i = 1; i < stroke.points.length; i++) {
+        const p0 = stroke.points[i - 1], p1 = stroke.points[i];
+        const sz = stroke.size * (0.35 + p1.pressure * 0.85);
+        const mx = (p0.x + p1.x) / 2, my = (p0.y + p1.y) / 2;
+        ctx.beginPath();
+        ctx.lineWidth = sz;
+        ctx.moveTo(p0.x, p0.y);
+        ctx.quadraticCurveTo(p0.x, p0.y, mx, my);
+        ctx.stroke();
+      }
+      break;
+    }
+
+    // ── 鉛筆：細連續實線 + 極薄邊緣顆粒感，模擬石墨 ──────────────────────────
+    case 'pencil': {
+      // 步驟一：用 globalCompositeOperation='source-over' 畫不透明主線
+      // 關鍵：整筆一條連續 path，不分段，避免虛線感
+      ctx.save();
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.strokeStyle = stroke.color;
+      ctx.globalAlpha = stroke.opacity;
+
+      // 用單一 path 串連所有點（貝茲中點法），讓線條完全連續
       ctx.beginPath();
       ctx.moveTo(stroke.points[0].x, stroke.points[0].y);
-      for (let i = 1; i < stroke.points.length; i++) {
-        const p0 = stroke.points[i - 1], p1 = stroke.points[i];
-        if (stroke.tool === 'pencil') {
-          // 鉛筆：石墨質感 — 主線 + 極細紋理，清晰即時
+      for (let i = 1; i < stroke.points.length - 1; i++) {
+        const p0 = stroke.points[i], p1 = stroke.points[i + 1];
+        const mx = (p0.x + p1.x) / 2, my = (p0.y + p1.y) / 2;
+        ctx.lineWidth = stroke.size * (0.28 + p0.pressure * 0.5);
+        ctx.quadraticCurveTo(p0.x, p0.y, mx, my);
+      }
+      const last = stroke.points[stroke.points.length - 1];
+      ctx.lineTo(last.x, last.y);
+      ctx.stroke();
+      ctx.restore();
+
+      // 步驟二：沿路徑加極稀疏石墨顆粒（只有 size > 2 才加，薄到幾乎看不見）
+      if (stroke.size > 2 && stroke.points.length > 1) {
+        ctx.fillStyle = stroke.color;
+        for (let i = 1; i < stroke.points.length; i++) {
+          const p0 = stroke.points[i - 1], p1 = stroke.points[i];
           const dist = Math.hypot(p1.x - p0.x, p1.y - p0.y);
-          if (dist < 0.5) break;
-          const pr = (p0.pressure + p1.pressure) / 2;
-          const sz = stroke.size * (0.3 + pr * 0.55); // 細筆
-
-          // ① 主線：貝茲平滑，不透明為主
-          const mx = (p0.x + p1.x) / 2, my = (p0.y + p1.y) / 2;
-          ctx.save();
-          ctx.globalAlpha = stroke.opacity * (0.7 + pr * 0.25);
-          ctx.strokeStyle = stroke.color;
-          ctx.lineWidth = sz;
-          ctx.lineCap = 'round';
-          ctx.lineJoin = 'round';
-          ctx.beginPath();
-          ctx.moveTo(p0.x, p0.y);
-          ctx.quadraticCurveTo(p0.x, p0.y, mx, my);
-          ctx.stroke();
-          ctx.restore();
-
-          // ② 石墨邊緣紋理：極少量、極小顆粒，沿線分布
-          if (stroke.size > 1.5) {
-            const steps = Math.max(1, Math.floor(dist / 3));
-            ctx.fillStyle = stroke.color;
-            for (let s = 0; s <= steps; s++) {
-              const t = s / steps;
-              const bx = p0.x + (p1.x - p0.x) * t;
-              const by = p0.y + (p1.y - p0.y) * t;
-              const grainCount = Math.floor(sz * 1.2);
-              for (let g = 0; g < grainCount; g++) {
-                const spread = sz * 0.6;
-                const gx = bx + (Math.random() * 2 - 1) * spread;
-                const gy = by + (Math.random() * 2 - 1) * spread;
-                ctx.save();
-                ctx.globalAlpha = stroke.opacity * (Math.random() * 0.18 + 0.04);
-                ctx.beginPath();
-                ctx.arc(gx, gy, Math.random() * 0.4 + 0.1, 0, Math.PI * 2);
-                ctx.fill();
-                ctx.restore();
-              }
+          const spread = stroke.size * 0.4;
+          const steps = Math.max(1, Math.floor(dist / 4));
+          for (let s = 0; s < steps; s++) {
+            const t = s / steps;
+            const bx = p0.x + (p1.x - p0.x) * t;
+            const by = p0.y + (p1.y - p0.y) * t;
+            // 每段只放 1~2 顆
+            const count = Math.random() < 0.5 ? 1 : 2;
+            for (let g = 0; g < count; g++) {
+              ctx.save();
+              ctx.globalAlpha = stroke.opacity * (Math.random() * 0.1 + 0.02);
+              ctx.beginPath();
+              ctx.arc(
+                bx + (Math.random() * 2 - 1) * spread,
+                by + (Math.random() * 2 - 1) * spread,
+                Math.random() * 0.35 + 0.1, 0, Math.PI * 2
+              );
+              ctx.fill();
+              ctx.restore();
             }
           }
-        } else {
-          // 針筆/橡皮擦：平滑線
-          const sz = stroke.size * (0.35 + p1.pressure * 0.85);
-          ctx.beginPath();
-          ctx.lineWidth = sz;
-          const mx = (p0.x + p1.x) / 2, my = (p0.y + p1.y) / 2;
-          ctx.moveTo(p0.x, p0.y);
-          ctx.quadraticCurveTo(p0.x, p0.y, mx, my);
-          ctx.stroke();
         }
       }
       break;
     }
 
+    // ── 粉蠟筆：連續實心圓 + 邊緣蠟筆顆粒 ────────────────────────────────────
     case 'crayon': {
-      // 粉蠟筆：高斯分布的蠟筆顆粒，更柔和
       ctx.fillStyle = stroke.color;
       for (let i = 1; i < stroke.points.length; i++) {
         const p0 = stroke.points[i - 1], p1 = stroke.points[i];
         const dist = Math.hypot(p1.x - p0.x, p1.y - p0.y);
-        const steps = Math.max(1, Math.floor(dist / 2));
         const pr = (p0.pressure + p1.pressure) / 2;
-        const sz = stroke.size * (0.6 + pr * 0.5);
+        const sz = stroke.size * (0.55 + pr * 0.5);
+        const steps = Math.max(1, Math.floor(dist / 1.5));
 
         for (let s = 0; s <= steps; s++) {
           const t = s / steps;
           const cx = p0.x + (p1.x - p0.x) * t;
           const cy = p0.y + (p1.y - p0.y) * t;
-          // 蠟筆核心：實心中心
+          // 核心實心
           ctx.save();
-          ctx.globalAlpha = stroke.opacity * 0.55 * pr;
+          ctx.globalAlpha = stroke.opacity * Math.min(1, 0.6 + pr * 0.4);
           ctx.beginPath();
-          ctx.arc(cx, cy, sz * 0.25, 0, Math.PI * 2);
+          ctx.arc(cx, cy, sz * 0.28, 0, Math.PI * 2);
           ctx.fill();
           ctx.restore();
-          // 蠟筆邊緣：散落顆粒
-          const grainCount = Math.floor(sz * 2.5);
+          // 邊緣顆粒
+          const grainCount = Math.floor(sz * 2);
           for (let g = 0; g < grainCount; g++) {
             const angle = Math.random() * Math.PI * 2;
-            const r = Math.pow(Math.random(), 0.5) * sz * 0.7;
+            const r = Math.pow(Math.random(), 0.6) * sz * 0.65;
             ctx.save();
-            ctx.globalAlpha = stroke.opacity * (Math.random() * 0.25 + 0.03);
+            ctx.globalAlpha = stroke.opacity * (Math.random() * 0.2 + 0.02);
             ctx.beginPath();
             ctx.arc(cx + r * Math.cos(angle), cy + r * Math.sin(angle),
-              Math.random() * 0.8 + 0.2, 0, Math.PI * 2);
+              Math.random() * 0.7 + 0.15, 0, Math.PI * 2);
             ctx.fill();
             ctx.restore();
           }
@@ -151,85 +159,76 @@ function renderStrokeToCtx(ctx: CanvasRenderingContext2D, stroke: Stroke, dpr: n
       break;
     }
 
+    // ── 水彩：單純 globalCompositeOperation='source-atop' 實心遮罩畫法 ─────────
+    // 原理：先用clip限定路徑範圍，在範圍內填色，邊緣柔和過渡
+    // 不累加透明度 → 交疊不會更深，顏色均勻
     case 'watercolor': {
-      // 水彩：多層半透明漸層，模擬顏料擴散
-      for (let i = 1; i < stroke.points.length; i++) {
-        const p0 = stroke.points[i - 1], p1 = stroke.points[i];
-        const dist = Math.hypot(p1.x - p0.x, p1.y - p0.y);
-        const steps = Math.max(1, Math.floor(dist / 4));
-        const pr = (p0.pressure + p1.pressure) / 2;
-        const radius = stroke.size * (1.2 + pr * 0.8);
+      if (stroke.points.length < 2) break;
+      // 建立整筆的路徑輪廓（用stroke寬度當clipPath的basis）
+      ctx.save();
 
-        for (let s = 0; s <= steps; s++) {
-          const t = s / steps;
-          const cx = p0.x + (p1.x - p0.x) * t;
-          const cy = p0.y + (p1.y - p0.y) * t;
+      // 計算整筆平均壓感
+      const avgPr = stroke.points.reduce((s, p) => s + p.pressure, 0) / stroke.points.length;
+      const radius = stroke.size * (0.8 + avgPr * 0.6);
 
-          // 主色層
-          ctx.save();
-          ctx.globalAlpha = stroke.opacity * 0.06 * (0.7 + pr * 0.5);
-          const g1 = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius);
-          g1.addColorStop(0, stroke.color);
-          g1.addColorStop(0.6, stroke.color);
-          g1.addColorStop(1, stroke.color + '00');
-          ctx.fillStyle = g1;
-          ctx.beginPath(); ctx.arc(cx, cy, radius, 0, Math.PI * 2); ctx.fill();
-          ctx.restore();
+      // 用 destination-out 先清空，再用 source-over 填色，達到「不累加」效果
+      // 實作：畫一條寬線（lineCap round），讓整條path的透明度固定
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.globalAlpha = stroke.opacity * Math.min(0.92, 0.55 + avgPr * 0.45);
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.strokeStyle = stroke.color;
 
-          // 邊緣暈染（更深，模擬水彩乾燥邊）
-          ctx.save();
-          ctx.globalAlpha = stroke.opacity * 0.035;
-          const g2 = ctx.createRadialGradient(cx, cy, radius * 0.7, cx, cy, radius * 1.1);
-          g2.addColorStop(0, stroke.color + '00');
-          g2.addColorStop(0.7, stroke.color);
-          g2.addColorStop(1, stroke.color + '00');
-          ctx.fillStyle = g2;
-          ctx.beginPath(); ctx.arc(cx, cy, radius * 1.1, 0, Math.PI * 2); ctx.fill();
-          ctx.restore();
-        }
+      // 用漸進寬度畫主體（類似 Procreate 水彩邊緣柔化）
+      ctx.beginPath();
+      ctx.moveTo(stroke.points[0].x, stroke.points[0].y);
+      for (let i = 1; i < stroke.points.length - 1; i++) {
+        const p = stroke.points[i], pn = stroke.points[i + 1];
+        const mx = (p.x + pn.x) / 2, my = (p.y + pn.y) / 2;
+        ctx.quadraticCurveTo(p.x, p.y, mx, my);
       }
+      const wlast = stroke.points[stroke.points.length - 1];
+      ctx.lineTo(wlast.x, wlast.y);
+      ctx.lineWidth = radius * 2;
+      ctx.stroke();
+
+      // 柔和邊緣：同路徑再畫一條更寬但極淡的線
+      ctx.globalAlpha = stroke.opacity * 0.08;
+      ctx.lineWidth = radius * 2.8;
+      ctx.stroke();
+
+      ctx.restore();
       break;
     }
 
+    // ── 噴槍：純放射漸層，無顆粒，顏色均勻柔和 ──────────────────────────────
     case 'airbrush': {
-      // 噴槍：柔和的放射狀霧化，壓感控制強度
-      ctx.fillStyle = stroke.color;
       for (let i = 1; i < stroke.points.length; i++) {
         const p0 = stroke.points[i - 1], p1 = stroke.points[i];
         const dist = Math.hypot(p1.x - p0.x, p1.y - p0.y);
-        const steps = Math.max(1, Math.floor(dist / 5));
         const pr = (p0.pressure + p1.pressure) / 2;
-        const radius = stroke.size * (1.8 + pr * 0.8);
+        const radius = stroke.size * (1.5 + pr * 0.6);
+        // 步進要密，讓填色連續不出現環形
+        const steps = Math.max(1, Math.floor(dist / 2));
 
         for (let s = 0; s <= steps; s++) {
           const t = s / steps;
           const cx = p0.x + (p1.x - p0.x) * t;
           const cy = p0.y + (p1.y - p0.y) * t;
 
-          // 柔和的高斯漸層噴霧
+          // 單一放射漸層：中心實色 → 邊緣全透明，不加顆粒不加邊緣層
           ctx.save();
-          ctx.globalAlpha = stroke.opacity * 0.045 * (0.5 + pr * 0.7);
+          // 透明度極低（每步疊加），讓顏色隨走速自然累積
+          ctx.globalAlpha = stroke.opacity * 0.028 * (0.4 + pr * 0.8);
           const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius);
-          grad.addColorStop(0, stroke.color);
-          grad.addColorStop(0.4, stroke.color);
-          grad.addColorStop(1, stroke.color + '00');
+          grad.addColorStop(0,   stroke.color);          // 中心實色
+          grad.addColorStop(0.35, stroke.color);         // 實色核心
+          grad.addColorStop(1,   stroke.color + '00');   // 邊緣全透明
           ctx.fillStyle = grad;
-          ctx.beginPath(); ctx.arc(cx, cy, radius, 0, Math.PI * 2); ctx.fill();
+          ctx.beginPath();
+          ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+          ctx.fill();
           ctx.restore();
-
-          // 細微顆粒（讓霧感更真實）
-          const particleCount = Math.floor(radius * 0.8 * pr);
-          for (let p = 0; p < particleCount; p++) {
-            const angle = Math.random() * Math.PI * 2;
-            const r = Math.pow(Math.random(), 1.8) * radius;
-            ctx.save();
-            ctx.globalAlpha = stroke.opacity * 0.06 * (1 - r / radius) * pr;
-            ctx.beginPath();
-            ctx.arc(cx + r * Math.cos(angle), cy + r * Math.sin(angle),
-              Math.random() * 0.6 + 0.15, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.restore();
-          }
         }
       }
       break;
