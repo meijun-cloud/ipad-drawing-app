@@ -217,6 +217,22 @@ export default function App() {
               title="重做 (三指右滑)"
             ><Redo2 size={14} /></button>
           </div>
+          {/* 縮放控制 — 移到 TopBar */}
+          <div className="flex items-center bg-black/20 rounded-lg border border-white/5 p-0.5">
+            <button
+              onClick={() => setCanvasZoom(Math.max(0.1, canvasZoom / 1.2))}
+              className="px-2 py-1 text-sm font-bold text-gray-300 hover:bg-white/10 hover:text-white rounded active:scale-90 transition-all cursor-pointer"
+            >-</button>
+            <span
+              className="px-2 text-xs font-mono text-gray-300 min-w-[44px] text-center cursor-pointer hover:text-white"
+              onClick={() => { setCanvasZoom(1.0); setCanvasPan({ x: 0, y: 0 }); }}
+              title="點擊重設"
+            >{Math.round(canvasZoom * 100)}%</span>
+            <button
+              onClick={() => setCanvasZoom(Math.min(10, canvasZoom * 1.2))}
+              className="px-2 py-1 text-sm font-bold text-gray-300 hover:bg-white/10 hover:text-white rounded active:scale-90 transition-all cursor-pointer"
+            >+</button>
+          </div>
           <button
             onClick={exportCanvasToPNG}
             className="flex items-center gap-1 bg-cyan-700 hover:bg-cyan-600 text-white text-xs px-3 py-1.5 rounded-lg font-bold shadow transition-all active:scale-95 cursor-pointer"
