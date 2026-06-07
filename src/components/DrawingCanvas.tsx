@@ -141,37 +141,54 @@ function renderStrokeToCtx(ctx: CanvasRenderingContext2D, stroke: Stroke, dpr: n
       break;
     }
 
-    // ── 粉蠟筆：連續實心圓 + 邊緣蠟筆顆粒（原版）────────────────────────────
+    // ── 6B 粉蠟筆：由內而外均勻顆粒分布，無實心核心，純顆粒質感 ──────────
+    // 參考圖二：顆粒從中心到邊緣均勻分布，輕壓稀疏、重壓密集
+    // 關鍵：用均勻分布而非冪次分布，讓顆粒在整個筆觸截面都有
     case 'crayon': {
       ctx.fillStyle = stroke.color;
+
       for (let i = 1; i < stroke.points.length; i++) {
         const p0 = stroke.points[i - 1], p1 = stroke.points[i];
         const dist = Math.hypot(p1.x - p0.x, p1.y - p0.y);
+        if (dist < 0.3) continue;
+
         const pr = (p0.pressure + p1.pressure) / 2;
-        const sz = stroke.size * (0.55 + pr * 0.5);
-        const steps = Math.max(1, Math.floor(dist / 1.5));
+        // 壓力大幅影響半徑（6B特徵：輕壓細，重壓粗）
+        const sz = stroke.size * (0.3 + pr * 0.85);
+        // 顆粒密度：由壓力決定，輕壓稀疏，重壓密集
+        const grainDensity = 0.12 + pr * 0.72; // 輕壓12%，重壓84%
+
+        // 步進間距：密，讓筆觸連續不斷裂
+        const spacing = Math.max(1, sz * 0.25);
+        const steps = Math.max(1, Math.floor(dist / spacing));
 
         for (let s = 0; s <= steps; s++) {
           const t = s / steps;
           const cx = p0.x + (p1.x - p0.x) * t;
           const cy = p0.y + (p1.y - p0.y) * t;
-          // 核心實心
-          ctx.save();
-          ctx.globalAlpha = stroke.opacity * Math.min(1, 0.6 + pr * 0.4);
-          ctx.beginPath();
-          ctx.arc(cx, cy, sz * 0.28, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.restore();
-          // 邊緣顆粒
-          const grainCount = Math.floor(sz * 2);
-          for (let g = 0; g < grainCount; g++) {
+
+          // 每個步進點的顆粒數量
+          const totalGrains = Math.floor(sz * sz * 0.55 * grainDensity);
+
+          for (let g = 0; g < totalGrains; g++) {
+            // 均勻分布：sqrt(random) 讓面積均勻（極座標面積補正）
+            // 這樣從圓心到邊緣每個環的顆粒密度一樣 → 由內而外均勻
+            const r = Math.sqrt(Math.random()) * sz;
             const angle = Math.random() * Math.PI * 2;
-            const r = Math.pow(Math.random(), 0.6) * sz * 0.65;
+            const gx = cx + r * Math.cos(angle);
+            const gy = cy + r * Math.sin(angle);
+
+            // 顆粒大小：1.2~2.8px（低頻，6B感），帶隨機變化
+            const gr = 1.2 + Math.random() * 1.6;
+
+            // 透明度：中心略高，邊緣略低，但整體差異小（均勻感）
+            const radialFactor = 1 - (r / sz) * 0.38; // 中心1，邊緣0.62
+            const alpha = stroke.opacity * grainDensity * (0.55 + Math.random() * 0.45) * radialFactor;
+
             ctx.save();
-            ctx.globalAlpha = stroke.opacity * (Math.random() * 0.2 + 0.02);
+            ctx.globalAlpha = Math.min(stroke.opacity, alpha);
             ctx.beginPath();
-            ctx.arc(cx + r * Math.cos(angle), cy + r * Math.sin(angle),
-              Math.random() * 0.7 + 0.15, 0, Math.PI * 2);
+            ctx.arc(gx, gy, gr, 0, Math.PI * 2);
             ctx.fill();
             ctx.restore();
           }
@@ -598,16 +615,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       onMouseLeave={() => setShowPointer(false)}
       style={{ touchAction: 'none' }}
     >
-      {/* 縮放控制 */}
-      <div className="absolute bottom-6 right-6 z-20 flex bg-[#2c2c2e]/90 text-white rounded-xl shadow-lg border border-white/5 items-center backdrop-blur-md p-1">
-        <button onClick={() => setCanvasZoom(Math.max(0.1, canvasZoom / 1.2))} className="px-3 py-2 text-sm font-semibold hover:bg-white/10 rounded-lg active:scale-95 text-gray-300 hover:text-white">-</button>
-        <span className="px-2 text-xs font-mono text-gray-300 min-w-[55px] text-center cursor-pointer" onClick={() => { setCanvasZoom(1); setCanvasPan({ x: 0, y: 0 }); }}>
-          {Math.round(canvasZoom * 100)}%
-        </span>
-        <button onClick={() => setCanvasZoom(Math.min(10, canvasZoom * 1.2))} className="px-3 py-2 text-sm font-semibold hover:bg-white/10 rounded-lg active:scale-95 text-gray-300 hover:text-white">+</button>
-        <div className="h-4 w-[1px] bg-white/10 mx-1" />
-        <button onClick={() => { setCanvasZoom(1); setCanvasPan({ x: 0, y: 0 }); }} className="px-3 py-2 text-xs text-cyan-400 hover:bg-white/10 rounded-lg">重設</button>
-      </div>
+
 
       {/* 簽名快捷 */}
       <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-20">

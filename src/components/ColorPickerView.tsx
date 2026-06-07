@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useMemo, useRef, useEffect } from 'react';
+import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { hapticFeedback } from './AudioSynthesizer';
 import { X, Hash, Info, Check } from 'lucide-react';
 
@@ -356,173 +356,236 @@ export const HSBColorWheel: React.FC<HSBColorWheelProps> = ({
   );
 };
 
+/**
+ * ColorPickerView — 圖四風格
+ * 矩形色域（左上白→右上純色→左下黑→右下黑）
+ * + 色相滑桿（彩虹）
+ * + 透明度滑桿
+ * + 歷史記錄列
+ */
 export const ColorPickerView: React.FC<ColorPickerViewProps> = ({
   currentColor,
   onChangeColor,
   colorHistory,
   onClose,
 }) => {
-  const [hexInput, setHexInput] = useState(currentColor.substring(1));
+  const hsb = useMemo(() => hexToHSB(currentColor), [currentColor]);
 
-  // Quick preset palette for beginners (cheerful organic animals tone)
-  const quickPresets = [
-    '#E05A47', // Fox Tera Red
-    '#FFB84D', // Lion Golden Yellow
-    '#4E8C5A', // Forest Frog Green
-    '#2997FF', // Apple Ocean Blue
-    '#A275E3', // Rabbit Violet
-    '#F2E2C4', // Bear Soft Cream
-    '#3B302F', // Squirrel Dark Brown
-    '#1C1C1E', // Charcoal Dark
-  ];
+  // ── 矩形色域 canvas ──────────────────────────────────────────────
+  const sbCanvasRef = useRef<HTMLCanvasElement>(null);
+  const hueCanvasRef = useRef<HTMLCanvasElement>(null);
+  const alphaCanvasRef = useRef<HTMLCanvasElement>(null);
 
-  const handleHexSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    let cleanHex = hexInput.trim();
-    if (!cleanHex.startsWith('#')) {
-      cleanHex = '#' + cleanHex;
+  const PICKER_W = 272;
+  const PICKER_H = 180;
+
+  // 畫矩形色域
+  useEffect(() => {
+    const canvas = sbCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = PICKER_W * dpr;
+    canvas.height = PICKER_H * dpr;
+    ctx.scale(dpr, dpr);
+
+    // 純色背景（當前色相）
+    const pureColor = hsbToHex(hsb.h, 1, 1);
+    ctx.fillStyle = pureColor;
+    ctx.fillRect(0, 0, PICKER_W, PICKER_H);
+
+    // 左→右：白色漸層（飽和度）
+    const whiteGrad = ctx.createLinearGradient(0, 0, PICKER_W, 0);
+    whiteGrad.addColorStop(0, 'rgba(255,255,255,1)');
+    whiteGrad.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = whiteGrad;
+    ctx.fillRect(0, 0, PICKER_W, PICKER_H);
+
+    // 上→下：黑色漸層（明度）
+    const blackGrad = ctx.createLinearGradient(0, 0, 0, PICKER_H);
+    blackGrad.addColorStop(0, 'rgba(0,0,0,0)');
+    blackGrad.addColorStop(1, 'rgba(0,0,0,1)');
+    ctx.fillStyle = blackGrad;
+    ctx.fillRect(0, 0, PICKER_W, PICKER_H);
+  }, [hsb.h]);
+
+  // 畫色相滑桿
+  useEffect(() => {
+    const canvas = hueCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = PICKER_W * dpr;
+    canvas.height = 16 * dpr;
+    ctx.scale(dpr, dpr);
+    const grad = ctx.createLinearGradient(0, 0, PICKER_W, 0);
+    for (let i = 0; i <= 360; i += 30) {
+      grad.addColorStop(i / 360, `hsl(${i},100%,50%)`);
     }
-    // Simple hex regex validation
-    if (/^#[0-9A-F]{6}$/i.test(cleanHex)) {
-      onChangeColor(cleanHex.toUpperCase());
-      setHexInput(cleanHex.substring(1).toUpperCase());
-      hapticFeedback.playTap('success');
-    } else {
-      hapticFeedback.playTap('warning');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.roundRect(0, 0, PICKER_W, 16, 8);
+    ctx.fill();
+  }, []);
+
+  // 畫透明度滑桿
+  useEffect(() => {
+    const canvas = alphaCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = PICKER_W * dpr;
+    canvas.height = 16 * dpr;
+    ctx.scale(dpr, dpr);
+    // 棋盤格背景
+    const tileSize = 8;
+    for (let x = 0; x < PICKER_W; x += tileSize) {
+      for (let y = 0; y < 16; y += tileSize) {
+        ctx.fillStyle = ((x + y) / tileSize) % 2 === 0 ? '#ccc' : '#fff';
+        ctx.fillRect(x, y, tileSize, tileSize);
+      }
     }
-  };
+    // 顏色→透明漸層
+    const rgb = hsbToRgb(hsb.h, hsb.s, hsb.b);
+    const aGrad = ctx.createLinearGradient(0, 0, PICKER_W, 0);
+    aGrad.addColorStop(0, `rgba(${rgb.r},${rgb.g},${rgb.b},0)`);
+    aGrad.addColorStop(1, `rgba(${rgb.r},${rgb.g},${rgb.b},1)`);
+    ctx.fillStyle = aGrad;
+    ctx.beginPath();
+    ctx.roundRect(0, 0, PICKER_W, 16, 8);
+    ctx.fill();
+  }, [hsb.h, hsb.s, hsb.b]);
+
+  // 透明度 state（0~1），暫時存在本地
+  const [opacity, setOpacity] = useState(1);
+
+  // ── 互動：矩形色域點擊/拖曳 ─────────────────────────────────────
+  const sbDragging = useRef(false);
+  const handleSBPointer = useCallback((clientX: number, clientY: number) => {
+    const canvas = sbCanvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const s = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    const b = Math.max(0, Math.min(1, 1 - (clientY - rect.top) / rect.height));
+    onChangeColor(hsbToHex(hsb.h, s, b));
+  }, [hsb.h, onChangeColor]);
+
+  // ── 互動：色相滑桿 ───────────────────────────────────────────────
+  const hueDragging = useRef(false);
+  const handleHuePointer = useCallback((clientX: number) => {
+    const canvas = hueCanvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const h = Math.max(0, Math.min(360, ((clientX - rect.left) / rect.width) * 360));
+    onChangeColor(hsbToHex(h, hsb.s, hsb.b));
+  }, [hsb.s, hsb.b, onChangeColor]);
+
+  // ── 互動：透明度滑桿 ─────────────────────────────────────────────
+  const alphaDragging = useRef(false);
+  const handleAlphaPointer = useCallback((clientX: number) => {
+    const canvas = alphaCanvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const a = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    setOpacity(Math.round(a * 100) / 100);
+  }, []);
 
   const selectColor = (color: string) => {
     onChangeColor(color);
-    setHexInput(color.substring(1).toUpperCase());
     hapticFeedback.playTap('selection');
   };
 
-  // Convert hex color to HSL for descriptive preview tags
-  const hexToHSLString = (hex: string): string => {
-    try {
-      const hsbVal = hexToHSB(hex);
-      return `H:${Math.round(hsbVal.h)}° S:${Math.round(hsbVal.s * 100)}% B:${Math.round(hsbVal.b * 100)}%`;
-    } catch {
-      return 'HSB模式';
-    }
-  };
+  // 顏色選取指示點位置
+  const sbDotX = hsb.s * PICKER_W;
+  const sbDotY = (1 - hsb.b) * PICKER_H;
+  const hueDotX = (hsb.h / 360) * PICKER_W;
+  const alphaDotX = opacity * PICKER_W;
 
   return (
     <div
-      className="bg-[#2c2c2e] text-white w-[320px] p-4 rounded-2xl shadow-3xl border border-white/10 flex flex-col gap-4 animate-in fade-in zoom-in-95 duration-150"
-      onClick={(e) => e.stopPropagation()} // Prevent closing when clicking within the panel
+      className="bg-[#1c1c1e] text-white rounded-2xl shadow-2xl border border-white/10 flex flex-col overflow-hidden"
+      style={{ width: `${PICKER_W + 32}px` }}
+      onClick={(e) => e.stopPropagation()}
     >
-      {/* Panel Header */}
-      <div className="flex items-center justify-between">
-        <h4 className="text-xs font-bold tracking-wide text-gray-300 flex items-center gap-1.5 uppercase font-sans">
-          <span>調色盤 HSB Palette</span>
-        </h4>
-        <button
-          onClick={() => {
-            onClose();
-            hapticFeedback.playTap('light');
-          }}
-          className="text-gray-400 hover:text-white rounded-full hover:bg-white/5 p-1 transition-colors cursor-pointer"
-        >
-          <X size={15} />
-        </button>
+      {/* 頂部：標題 + 當前色 + 前一色 */}
+      <div className="flex items-center justify-between px-4 pt-3 pb-2">
+        <span className="text-sm font-semibold text-white">顏色</span>
+        <div className="flex items-center gap-2">
+          <div className="w-8 h-8 rounded-lg border border-white/20 cursor-pointer"
+            style={{ background: currentColor }}
+            title="目前顏色" />
+          <div className="w-8 h-8 rounded-lg border border-white/10 bg-white cursor-pointer"
+            onClick={() => selectColor('#FFFFFF')} title="重設白色" />
+          <button onClick={() => { onClose(); hapticFeedback.playTap('light'); }}
+            className="text-gray-400 hover:text-white p-1 rounded-lg hover:bg-white/5 cursor-pointer ml-1">
+            <X size={15} />
+          </button>
+        </div>
       </div>
 
-      {/* 🔮 Interactive Hue Circular Ring + Saturation/Brightness Disc (HSB Picker) - Fits layout (圖二) perfectly */}
-      <div className="flex flex-col gap-1">
-        <label className="text-[10px] text-gray-400 font-medium">1. 選擇色相與彩度 Select Color</label>
-        <HSBColorWheel
-          currentColor={currentColor}
-          onChangeColor={selectColor}
+      {/* 矩形色域 */}
+      <div className="relative mx-4" style={{ height: `${PICKER_H}px` }}>
+        <canvas
+          ref={sbCanvasRef}
+          style={{ width: `${PICKER_W}px`, height: `${PICKER_H}px`, borderRadius: '8px', cursor: 'crosshair', display: 'block' }}
+          onPointerDown={(e) => { sbDragging.current = true; (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); handleSBPointer(e.clientX, e.clientY); }}
+          onPointerMove={(e) => { if (sbDragging.current) handleSBPointer(e.clientX, e.clientY); }}
+          onPointerUp={() => { sbDragging.current = false; }}
         />
+        {/* 選取圓點 */}
+        <div className="absolute pointer-events-none w-4 h-4 rounded-full border-2 border-white shadow-md"
+          style={{ left: `${sbDotX - 8}px`, top: `${sbDotY - 8}px`, background: currentColor }} />
       </div>
 
-      {/* 🎨 Mini Presets Palette for Kids or Beginners */}
-      <div className="flex flex-col gap-1.5">
-        <label className="text-[10px] text-gray-400 font-medium">常見動物插圖專用色集 Preset Theme</label>
-        <div className="grid grid-cols-8 gap-1.5">
-          {quickPresets.map((color) => (
-            <button
-              key={color}
-              onClick={() => selectColor(color)}
-              className="aspect-square rounded-lg border border-black/10 transition-all hover:scale-115 active:scale-90 cursor-pointer relative"
-              style={{ backgroundColor: color }}
-              title={`切換到 ${color}`}
-            >
-              {currentColor === color && (
-                <div className="absolute inset-0 flex items-center justify-center text-white mix-blend-difference drop-shadow-sm">
-                  <Check size={10} strokeWidth={3} />
-                </div>
-              )}
-            </button>
-          ))}
+      {/* 色相滑桿 */}
+      <div className="relative mx-4 mt-3" style={{ height: '16px' }}>
+        <canvas
+          ref={hueCanvasRef}
+          style={{ width: `${PICKER_W}px`, height: '16px', borderRadius: '8px', cursor: 'pointer', display: 'block' }}
+          onPointerDown={(e) => { hueDragging.current = true; (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); handleHuePointer(e.clientX); }}
+          onPointerMove={(e) => { if (hueDragging.current) handleHuePointer(e.clientX); }}
+          onPointerUp={() => { hueDragging.current = false; }}
+        />
+        {/* 色相指示點 */}
+        <div className="absolute pointer-events-none w-5 h-5 rounded-full border-2 border-white shadow-md -top-0.5"
+          style={{ left: `${hueDotX - 10}px`, background: hsbToHex(hsb.h, 1, 1) }} />
+      </div>
+
+      {/* 透明度滑桿 */}
+      <div className="relative mx-4 mt-3" style={{ height: '16px' }}>
+        <canvas
+          ref={alphaCanvasRef}
+          style={{ width: `${PICKER_W}px`, height: '16px', borderRadius: '8px', cursor: 'pointer', display: 'block' }}
+          onPointerDown={(e) => { alphaDragging.current = true; (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); handleAlphaPointer(e.clientX); }}
+          onPointerMove={(e) => { if (alphaDragging.current) handleAlphaPointer(e.clientX); }}
+          onPointerUp={() => { alphaDragging.current = false; }}
+        />
+        {/* 透明度指示點 */}
+        <div className="absolute pointer-events-none w-5 h-5 rounded-full border-2 border-white shadow-md -top-0.5"
+          style={{ left: `${alphaDotX - 10}px`, background: `rgba(128,128,128,${opacity})` }} />
+      </div>
+
+      {/* 歷史記錄 */}
+      <div className="mx-4 mt-4 mb-4">
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-xs text-gray-400">歷史記錄</span>
+          <button className="text-xs text-gray-500 hover:text-white cursor-pointer">清除</button>
         </div>
-      </div>
-
-      <div className="h-[1px] bg-white/5" />
-
-      {/* 📝 Hex Color Direct Input Forms */}
-      <form onSubmit={handleHexSubmit} className="flex gap-2 items-center justify-between">
-        <div className="flex flex-col gap-1 w-1/2">
-          <label className="text-[9px] text-gray-500">十六進位 Hex Code</label>
-          <div className="flex bg-black/30 rounded-lg px-2 py-1.5 border border-white/5 items-center gap-1">
-            <Hash size={10} className="text-gray-500" />
-            <input
-              type="text"
-              value={hexInput}
-              onChange={(e) => setHexInput(e.target.value)}
-              className="bg-transparent text-white font-mono text-[11px] outline-none w-full uppercase"
-              placeholder="FFFFFF"
-              maxLength={6}
-            />
-          </div>
-        </div>
-
-        <button
-          type="submit"
-          className="bg-[#2997FF] hover:bg-[#1479d6] text-white text-[10px] py-2 px-3 rounded-lg leading-none transition-colors border border-blue-500/10 cursor-pointer mt-3"
-        >
-          套用自訂色彩
-        </button>
-      </form>
-
-      {/* Display current color metrics tag */}
-      <div className="bg-black/20 px-2 py-1.5 rounded-lg flex items-center justify-between text-[10px] text-gray-400">
-        <span className="flex items-center gap-1 text-[9px]">
-          <Info size={10} />
-          {hexToHSLString(currentColor)}
-        </span>
-        <span className="font-mono text-[9px] font-bold text-gray-300">{currentColor}</span>
-      </div>
-
-      <div className="h-[1px] bg-white/5" />
-
-      {/* 🔴 Labeled History Panel (To prevent feature ignorance - Task 3) */}
-      <div className="flex flex-col gap-2 bg-[#1C1C1E] p-2.5 rounded-xl border border-white/5">
-        <h5 className="text-[10px] font-bold text-yellow-400 font-sans tracking-wide flex items-center justify-between">
-          <span>最近使用 (最近選取保留區)</span>
-          <span className="text-[8px] text-gray-500 font-normal">最多保存 8 格</span>
-        </h5>
-        
-        <div className="flex gap-2.5 justify-start items-center">
+        <div className="flex gap-2 flex-wrap">
           {colorHistory.length === 0 ? (
-            <span className="text-[9px] text-gray-500 py-1 italic">尚未產生繪圖色彩歷史...</span>
+            <span className="text-[9px] text-gray-500 italic">尚未使用任何顏色</span>
           ) : (
             colorHistory.map((color, idx) => (
               <button
                 key={`${color}-${idx}`}
                 onClick={() => selectColor(color)}
-                className="w-7 h-7 rounded-full border border-black/10 transition-all hover:scale-110 active:scale-90 cursor-pointer relative"
-                style={{ backgroundColor: color }}
-                title="點擊切換顏色"
-              >
-                {currentColor === color && (
-                  <div className="absolute inset-0 flex items-center justify-center text-white mix-blend-difference drop-shadow-sm">
-                    <Check size={10} strokeWidth={3} />
-                  </div>
-                )}
-              </button>
+                className="w-8 h-8 rounded-full border-2 border-white/10 hover:scale-110 active:scale-90 cursor-pointer transition-all"
+                style={{ background: color }}
+                title={color}
+              />
             ))
           )}
         </div>
