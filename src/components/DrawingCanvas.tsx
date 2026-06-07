@@ -141,62 +141,39 @@ function renderStrokeToCtx(ctx: CanvasRenderingContext2D, stroke: Stroke, dpr: n
       break;
     }
 
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 6B 粉蠟筆：粗糙低頻顆粒，壓力大幅影響寬度與密度
-    // 輕壓 → 稀疏粗糙紋理（紙張凹凸感）
-    // 重壓 → 填滿，筆觸明顯變寬
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // ── 粉蠟筆：連續實心圓 + 邊緣蠟筆顆粒（原版）────────────────────────────
     case 'crayon': {
-      const pts = stroke.points;
       ctx.fillStyle = stroke.color;
-
-      for (let i = 1; i < pts.length; i++) {
-        const p0 = pts[i - 1], p1 = pts[i];
+      for (let i = 1; i < stroke.points.length; i++) {
+        const p0 = stroke.points[i - 1], p1 = stroke.points[i];
         const dist = Math.hypot(p1.x - p0.x, p1.y - p0.y);
-        if (dist < 0.5) continue;
-
         const pr = (p0.pressure + p1.pressure) / 2;
-        // 壓力同時大幅控制粗細（6B特徵）
-        const sz = stroke.size * (0.35 + pr * 1.1);
-        // 低頻顆粒：間距大（3~6px），顆粒大（1~3px）
-        const spacing = 2.5 + (1 - pr) * 3;
-        const steps = Math.max(1, Math.floor(dist / spacing));
+        const sz = stroke.size * (0.55 + pr * 0.5);
+        const steps = Math.max(1, Math.floor(dist / 1.5));
 
         for (let s = 0; s <= steps; s++) {
           const t = s / steps;
           const cx = p0.x + (p1.x - p0.x) * t;
           const cy = p0.y + (p1.y - p0.y) * t;
-
-          // 壓力控制 threshold：輕壓只渲染外圍零星顆粒，重壓填滿核心
-          const threshold = 1 - pr; // 0(重壓)~1(輕壓)
-
-          // ① 核心實心（重壓才出現）
-          if (Math.random() > threshold * 0.9) {
-            ctx.save();
-            ctx.globalAlpha = stroke.opacity * Math.min(1, 0.55 + pr * 0.45);
-            ctx.beginPath();
-            ctx.arc(cx, cy, sz * 0.32, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.restore();
-          }
-
-          // ② 低頻粗糙顆粒（紙張凹凸感，輕壓依然有）
-          const grainCount = Math.floor(3 + pr * sz * 1.8);
+          // 核心實心
+          ctx.save();
+          ctx.globalAlpha = stroke.opacity * Math.min(1, 0.6 + pr * 0.4);
+          ctx.beginPath();
+          ctx.arc(cx, cy, sz * 0.28, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+          // 邊緣顆粒
+          const grainCount = Math.floor(sz * 2);
           for (let g = 0; g < grainCount; g++) {
             const angle = Math.random() * Math.PI * 2;
-            // 冪次分布讓邊緣顆粒更多（蠟筆邊緣飛散感）
-            const r = Math.pow(Math.random(), 0.35) * sz * 0.85;
-            // 顆粒大小：1~3px，低頻
-            const gr = 0.8 + Math.random() * 1.8;
-            // 只渲染通過 threshold 的顆粒（模擬紙張凹凸）
-            if (r / (sz * 0.85) > threshold * 0.7) {
-              ctx.save();
-              ctx.globalAlpha = stroke.opacity * (0.15 + Math.random() * 0.45);
-              ctx.beginPath();
-              ctx.arc(cx + r * Math.cos(angle), cy + r * Math.sin(angle), gr, 0, Math.PI * 2);
-              ctx.fill();
-              ctx.restore();
-            }
+            const r = Math.pow(Math.random(), 0.6) * sz * 0.65;
+            ctx.save();
+            ctx.globalAlpha = stroke.opacity * (Math.random() * 0.2 + 0.02);
+            ctx.beginPath();
+            ctx.arc(cx + r * Math.cos(angle), cy + r * Math.sin(angle),
+              Math.random() * 0.7 + 0.15, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
           }
         }
       }
