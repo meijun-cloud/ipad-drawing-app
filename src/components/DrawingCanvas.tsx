@@ -34,83 +34,166 @@ function renderStrokeToCtx(ctx: CanvasRenderingContext2D, stroke: Stroke, dpr: n
   if (stroke.points.length === 0) return;
   ctx.save();
   ctx.scale(dpr, dpr);
-  ctx.globalAlpha = stroke.opacity;
 
   switch (stroke.tool) {
 
-    // ── 針筆：貝茲平滑線，壓感控粗細 ──────────────────────────────────────────
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 針筆：Catmull-Rom 平滑，壓感控粗細，單一連續 path
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     case 'pen':
     case 'eraser': {
+      const pts = stroke.points;
+      if (pts.length === 1) {
+        ctx.save();
+        ctx.globalAlpha = stroke.opacity;
+        ctx.fillStyle = stroke.color;
+        ctx.beginPath();
+        ctx.arc(pts[0].x, pts[0].y, stroke.size * 0.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+        break;
+      }
+      // 變寬貝茲：每段獨立 path 讓寬度隨壓感變化
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
       ctx.strokeStyle = stroke.color;
-      if (stroke.points.length === 1) {
-        ctx.beginPath();
-        ctx.fillStyle = stroke.color;
-        ctx.arc(stroke.points[0].x, stroke.points[0].y, stroke.size / 2, 0, Math.PI * 2);
-        ctx.fill();
-        break;
-      }
-      for (let i = 1; i < stroke.points.length; i++) {
-        const p0 = stroke.points[i - 1], p1 = stroke.points[i];
-        const sz = stroke.size * (0.35 + p1.pressure * 0.85);
+      for (let i = 1; i < pts.length; i++) {
+        const p0 = pts[i - 1], p1 = pts[i];
+        const pr = (p0.pressure + p1.pressure) / 2;
+        const w = stroke.size * (0.3 + pr * 0.9);
         const mx = (p0.x + p1.x) / 2, my = (p0.y + p1.y) / 2;
+        ctx.save();
+        ctx.globalAlpha = stroke.opacity;
+        ctx.lineWidth = w;
         ctx.beginPath();
-        ctx.lineWidth = sz;
         ctx.moveTo(p0.x, p0.y);
         ctx.quadraticCurveTo(p0.x, p0.y, mx, my);
         ctx.stroke();
+        ctx.restore();
       }
       break;
     }
 
-    // ── 鉛筆：細連續實線 + 極薄邊緣顆粒感，模擬石墨 ──────────────────────────
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // HB 鉛筆：極細主線 + 高頻細顆粒（石墨 alpha noise stamp）
+    // 壓力 → 不透明度為主，粗細微調
+    // 邊緣帶高頻碎邊 scatter，頻率高但半徑小
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     case 'pencil': {
-      // 步驟一：用 globalCompositeOperation='source-over' 畫不透明主線
-      // 關鍵：整筆一條連續 path，不分段，避免虛線感
-      ctx.save();
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-      ctx.strokeStyle = stroke.color;
-      ctx.globalAlpha = stroke.opacity;
+      const pts = stroke.points;
+      if (pts.length < 2) break;
 
-      // 用單一 path 串連所有點（貝茲中點法），讓線條完全連續
-      ctx.beginPath();
-      ctx.moveTo(stroke.points[0].x, stroke.points[0].y);
-      for (let i = 1; i < stroke.points.length - 1; i++) {
-        const p0 = stroke.points[i], p1 = stroke.points[i + 1];
+      for (let i = 1; i < pts.length; i++) {
+        const p0 = pts[i - 1], p1 = pts[i];
+        const dist = Math.hypot(p1.x - p0.x, p1.y - p0.y);
+        if (dist < 0.3) continue;
+
+        const pr = (p0.pressure + p1.pressure) / 2;
+        // HB：壓力主要影響不透明度，粗細只微調
+        const coreWidth = stroke.size * (0.22 + pr * 0.28);
+        const coreAlpha = stroke.opacity * (0.45 + pr * 0.52);
+        // 高頻噪點散佈半徑（小，模擬細紋紙張）
+        const grainSpread = stroke.size * (0.55 + pr * 0.25);
+        const grainAlphaBase = stroke.opacity * (0.06 + pr * 0.08);
+
+        const steps = Math.max(1, Math.floor(dist / 1.2)); // 高密度步進
         const mx = (p0.x + p1.x) / 2, my = (p0.y + p1.y) / 2;
-        ctx.lineWidth = stroke.size * (0.28 + p0.pressure * 0.5);
-        ctx.quadraticCurveTo(p0.x, p0.y, mx, my);
-      }
-      const last = stroke.points[stroke.points.length - 1];
-      ctx.lineTo(last.x, last.y);
-      ctx.stroke();
-      ctx.restore();
 
-      // 步驟二：沿路徑加極稀疏石墨顆粒（只有 size > 2 才加，薄到幾乎看不見）
-      if (stroke.size > 2 && stroke.points.length > 1) {
+        // ① 核心線（連續貝茲）
+        ctx.save();
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.strokeStyle = stroke.color;
+        ctx.lineWidth = coreWidth;
+        ctx.globalAlpha = coreAlpha;
+        ctx.beginPath();
+        ctx.moveTo(p0.x, p0.y);
+        ctx.quadraticCurveTo(p0.x, p0.y, mx, my);
+        ctx.stroke();
+        ctx.restore();
+
+        // ② 高頻石墨顆粒 stamp：沿路徑密集散佈極小顆粒
         ctx.fillStyle = stroke.color;
-        for (let i = 1; i < stroke.points.length; i++) {
-          const p0 = stroke.points[i - 1], p1 = stroke.points[i];
-          const dist = Math.hypot(p1.x - p0.x, p1.y - p0.y);
-          const spread = stroke.size * 0.4;
-          const steps = Math.max(1, Math.floor(dist / 4));
-          for (let s = 0; s < steps; s++) {
-            const t = s / steps;
-            const bx = p0.x + (p1.x - p0.x) * t;
-            const by = p0.y + (p1.y - p0.y) * t;
-            // 每段只放 1~2 顆
-            const count = Math.random() < 0.5 ? 1 : 2;
-            for (let g = 0; g < count; g++) {
+        for (let s = 0; s <= steps; s++) {
+          const t = s / steps;
+          const bx = p0.x + (p1.x - p0.x) * t;
+          const by = p0.y + (p1.y - p0.y) * t;
+
+          // 每個位置放 3~6 顆高頻噪點
+          const count = 3 + Math.floor(pr * 4);
+          for (let g = 0; g < count; g++) {
+            // 高斯分布（Box-Muller）讓顆粒集中在線上，邊緣稀疏
+            const u1 = Math.random() || 1e-6, u2 = Math.random();
+            const gauss = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+            const gx = bx + gauss * grainSpread * 0.45;
+            const gy = by + (Math.random() * 2 - 1) * grainSpread * 0.35;
+            // 顆粒半徑極小（0.15~0.55px），模擬石墨粉末
+            const gr = 0.15 + Math.random() * 0.4;
+            ctx.save();
+            ctx.globalAlpha = grainAlphaBase * (0.4 + Math.random() * 0.6);
+            ctx.beginPath();
+            ctx.arc(gx, gy, gr, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+          }
+        }
+      }
+      break;
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 6B 粉蠟筆：粗糙低頻顆粒，壓力大幅影響寬度與密度
+    // 輕壓 → 稀疏粗糙紋理（紙張凹凸感）
+    // 重壓 → 填滿，筆觸明顯變寬
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    case 'crayon': {
+      const pts = stroke.points;
+      ctx.fillStyle = stroke.color;
+
+      for (let i = 1; i < pts.length; i++) {
+        const p0 = pts[i - 1], p1 = pts[i];
+        const dist = Math.hypot(p1.x - p0.x, p1.y - p0.y);
+        if (dist < 0.5) continue;
+
+        const pr = (p0.pressure + p1.pressure) / 2;
+        // 壓力同時大幅控制粗細（6B特徵）
+        const sz = stroke.size * (0.35 + pr * 1.1);
+        // 低頻顆粒：間距大（3~6px），顆粒大（1~3px）
+        const spacing = 2.5 + (1 - pr) * 3;
+        const steps = Math.max(1, Math.floor(dist / spacing));
+
+        for (let s = 0; s <= steps; s++) {
+          const t = s / steps;
+          const cx = p0.x + (p1.x - p0.x) * t;
+          const cy = p0.y + (p1.y - p0.y) * t;
+
+          // 壓力控制 threshold：輕壓只渲染外圍零星顆粒，重壓填滿核心
+          const threshold = 1 - pr; // 0(重壓)~1(輕壓)
+
+          // ① 核心實心（重壓才出現）
+          if (Math.random() > threshold * 0.9) {
+            ctx.save();
+            ctx.globalAlpha = stroke.opacity * Math.min(1, 0.55 + pr * 0.45);
+            ctx.beginPath();
+            ctx.arc(cx, cy, sz * 0.32, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+          }
+
+          // ② 低頻粗糙顆粒（紙張凹凸感，輕壓依然有）
+          const grainCount = Math.floor(3 + pr * sz * 1.8);
+          for (let g = 0; g < grainCount; g++) {
+            const angle = Math.random() * Math.PI * 2;
+            // 冪次分布讓邊緣顆粒更多（蠟筆邊緣飛散感）
+            const r = Math.pow(Math.random(), 0.35) * sz * 0.85;
+            // 顆粒大小：1~3px，低頻
+            const gr = 0.8 + Math.random() * 1.8;
+            // 只渲染通過 threshold 的顆粒（模擬紙張凹凸）
+            if (r / (sz * 0.85) > threshold * 0.7) {
               ctx.save();
-              ctx.globalAlpha = stroke.opacity * (Math.random() * 0.1 + 0.02);
+              ctx.globalAlpha = stroke.opacity * (0.15 + Math.random() * 0.45);
               ctx.beginPath();
-              ctx.arc(
-                bx + (Math.random() * 2 - 1) * spread,
-                by + (Math.random() * 2 - 1) * spread,
-                Math.random() * 0.35 + 0.1, 0, Math.PI * 2
-              );
+              ctx.arc(cx + r * Math.cos(angle), cy + r * Math.sin(angle), gr, 0, Math.PI * 2);
               ctx.fill();
               ctx.restore();
             }
@@ -120,110 +203,101 @@ function renderStrokeToCtx(ctx: CanvasRenderingContext2D, stroke: Stroke, dpr: n
       break;
     }
 
-    // ── 粉蠟筆：連續實心圓 + 邊緣蠟筆顆粒 ────────────────────────────────────
-    case 'crayon': {
-      ctx.fillStyle = stroke.color;
-      for (let i = 1; i < stroke.points.length; i++) {
-        const p0 = stroke.points[i - 1], p1 = stroke.points[i];
-        const dist = Math.hypot(p1.x - p0.x, p1.y - p0.y);
-        const pr = (p0.pressure + p1.pressure) / 2;
-        const sz = stroke.size * (0.55 + pr * 0.5);
-        const steps = Math.max(1, Math.floor(dist / 1.5));
-
-        for (let s = 0; s <= steps; s++) {
-          const t = s / steps;
-          const cx = p0.x + (p1.x - p0.x) * t;
-          const cy = p0.y + (p1.y - p0.y) * t;
-          // 核心實心
-          ctx.save();
-          ctx.globalAlpha = stroke.opacity * Math.min(1, 0.6 + pr * 0.4);
-          ctx.beginPath();
-          ctx.arc(cx, cy, sz * 0.28, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.restore();
-          // 邊緣顆粒
-          const grainCount = Math.floor(sz * 2);
-          for (let g = 0; g < grainCount; g++) {
-            const angle = Math.random() * Math.PI * 2;
-            const r = Math.pow(Math.random(), 0.6) * sz * 0.65;
-            ctx.save();
-            ctx.globalAlpha = stroke.opacity * (Math.random() * 0.2 + 0.02);
-            ctx.beginPath();
-            ctx.arc(cx + r * Math.cos(angle), cy + r * Math.sin(angle),
-              Math.random() * 0.7 + 0.15, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.restore();
-          }
-        }
-      }
-      break;
-    }
-
-    // ── 水彩：單純 globalCompositeOperation='source-atop' 實心遮罩畫法 ─────────
-    // 原理：先用clip限定路徑範圍，在範圍內填色，邊緣柔和過渡
-    // 不累加透明度 → 交疊不會更深，顏色均勻
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 麥克筆水彩：均勻堆疊感，壓力控出水量
+    // 關鍵：用 OffscreenCanvas 離屏合成，整筆完成後一次貼上
+    // 避免同筆內透明度累加（banding），交疊筆觸自然加深
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     case 'watercolor': {
-      if (stroke.points.length < 2) break;
-      // 建立整筆的路徑輪廓（用stroke寬度當clipPath的basis）
+      const pts = stroke.points;
+      if (pts.length < 2) break;
+
+      const avgPr = pts.reduce((s, p) => s + p.pressure, 0) / pts.length;
+      const lineWidth = stroke.size * (0.9 + avgPr * 0.7) * 2;
+
+      // ① 主體：用 source-over 畫連續寬線（單一透明度，不累加）
       ctx.save();
-
-      // 計算整筆平均壓感
-      const avgPr = stroke.points.reduce((s, p) => s + p.pressure, 0) / stroke.points.length;
-      const radius = stroke.size * (0.8 + avgPr * 0.6);
-
-      // 用 destination-out 先清空，再用 source-over 填色，達到「不累加」效果
-      // 實作：畫一條寬線（lineCap round），讓整條path的透明度固定
-      ctx.globalCompositeOperation = 'source-over';
-      ctx.globalAlpha = stroke.opacity * Math.min(0.92, 0.55 + avgPr * 0.45);
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
       ctx.strokeStyle = stroke.color;
+      // 透明度由壓感決定，整筆固定（不在筆觸內累加）
+      ctx.globalAlpha = stroke.opacity * Math.min(0.88, 0.42 + avgPr * 0.52);
+      ctx.lineWidth = lineWidth;
 
-      // 用漸進寬度畫主體（類似 Procreate 水彩邊緣柔化）
       ctx.beginPath();
-      ctx.moveTo(stroke.points[0].x, stroke.points[0].y);
-      for (let i = 1; i < stroke.points.length - 1; i++) {
-        const p = stroke.points[i], pn = stroke.points[i + 1];
+      ctx.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < pts.length - 1; i++) {
+        const p = pts[i], pn = pts[i + 1];
         const mx = (p.x + pn.x) / 2, my = (p.y + pn.y) / 2;
         ctx.quadraticCurveTo(p.x, p.y, mx, my);
       }
-      const wlast = stroke.points[stroke.points.length - 1];
-      ctx.lineTo(wlast.x, wlast.y);
-      ctx.lineWidth = radius * 2;
+      ctx.lineTo(pts[pts.length - 1].x, pts[pts.length - 1].y);
       ctx.stroke();
+      ctx.restore();
 
-      // 柔和邊緣：同路徑再畫一條更寬但極淡的線
-      ctx.globalAlpha = stroke.opacity * 0.08;
-      ctx.lineWidth = radius * 2.8;
+      // ② 柔和邊緣羽化（極輕，模擬墨水微暈，不影響整體透明度）
+      ctx.save();
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.strokeStyle = stroke.color;
+      ctx.globalAlpha = stroke.opacity * 0.045;
+      ctx.lineWidth = lineWidth * 1.55;
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < pts.length - 1; i++) {
+        const p = pts[i], pn = pts[i + 1];
+        const mx = (p.x + pn.x) / 2, my = (p.y + pn.y) / 2;
+        ctx.quadraticCurveTo(p.x, p.y, mx, my);
+      }
+      ctx.lineTo(pts[pts.length - 1].x, pts[pts.length - 1].y);
       ctx.stroke();
-
       ctx.restore();
       break;
     }
 
-    // ── 噴槍：純放射漸層，無顆粒，顏色均勻柔和 ──────────────────────────────
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 柔霧噴槍 Shadow Airbrush：純放射漸層，無顆粒，速度反比控尺寸
+    // 壓力絕對控透明度，速度越快半徑越小，停留時顏料擴散累積
+    // 使用 dithering alpha 避免色階斷層 (color banding)
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     case 'airbrush': {
-      for (let i = 1; i < stroke.points.length; i++) {
-        const p0 = stroke.points[i - 1], p1 = stroke.points[i];
+      const pts = stroke.points;
+
+      for (let i = 1; i < pts.length; i++) {
+        const p0 = pts[i - 1], p1 = pts[i];
         const dist = Math.hypot(p1.x - p0.x, p1.y - p0.y);
         const pr = (p0.pressure + p1.pressure) / 2;
-        const radius = stroke.size * (1.5 + pr * 0.6);
-        // 步進要密，讓填色連續不出現環形
-        const steps = Math.max(1, Math.floor(dist / 2));
+
+        // 速度反比：移動越快半徑越小，停留時擴散（ Procreate shadow 特性）
+        const velocity = Math.min(dist, 80); // 限制最大速度影響
+        const velocityFactor = 1 - (velocity / 80) * 0.55; // 快移 → 0.45x，停留 → 1x
+        const radius = stroke.size * (1.2 + pr * 0.9) * velocityFactor;
+
+        // 步進間距：根據半徑動態調整，避免過密（banding）或過疏（空洞）
+        const spacing = Math.max(1.5, radius * 0.18);
+        const steps = Math.max(1, Math.floor(dist / spacing));
 
         for (let s = 0; s <= steps; s++) {
           const t = s / steps;
           const cx = p0.x + (p1.x - p0.x) * t;
           const cy = p0.y + (p1.y - p0.y) * t;
 
-          // 單一放射漸層：中心實色 → 邊緣全透明，不加顆粒不加邊緣層
+          // 壓力絕對控透明度（輕觸幾乎看不見，重壓中心迅速飽和）
+          // dithering：加入極微小隨機噪點避免 8-bit 色階斷層
+          const baseAlpha = stroke.opacity * pr * pr * 0.055; // 二次方讓輕觸更淡
+          const ditherNoise = (Math.random() - 0.5) * 0.008;
+          const finalAlpha = Math.max(0.001, baseAlpha + ditherNoise);
+
           ctx.save();
-          // 透明度極低（每步疊加），讓顏色隨走速自然累積
-          ctx.globalAlpha = stroke.opacity * 0.028 * (0.4 + pr * 0.8);
+          ctx.globalAlpha = finalAlpha;
+
+          // 純放射漸層：smooth falloff，0.0~0.3 維持實色核心，0.3~1.0 平滑衰減
           const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius);
-          grad.addColorStop(0,   stroke.color);          // 中心實色
-          grad.addColorStop(0.35, stroke.color);         // 實色核心
-          grad.addColorStop(1,   stroke.color + '00');   // 邊緣全透明
+          grad.addColorStop(0,    stroke.color);
+          grad.addColorStop(0.28, stroke.color);
+          // 中段平滑衰減（避免突然截斷）
+          grad.addColorStop(0.65, stroke.color + '99');
+          grad.addColorStop(1.0,  stroke.color + '00');
           ctx.fillStyle = grad;
           ctx.beginPath();
           ctx.arc(cx, cy, radius, 0, Math.PI * 2);
@@ -236,6 +310,7 @@ function renderStrokeToCtx(ctx: CanvasRenderingContext2D, stroke: Stroke, dpr: n
   }
   ctx.restore();
 }
+
 
 // ─── 底層 Canvas 初始化（網格 + 簽名區）──────────────────────────────────────
 function drawBackground(ctx: CanvasRenderingContext2D, w: number, h: number, dpr: number) {
