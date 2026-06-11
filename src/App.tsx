@@ -87,10 +87,8 @@ export default function App() {
   }, [isSoundMuted]);
 
   const handleColorChange = (newColor: string) => {
+    // 只更新當前顏色，不記錄歷史（歷史只在實際落筆後才記錄）
     setCurrentColor(newColor);
-    const updated = [newColor, ...colorHistory.filter(c => c !== newColor)].slice(0, 8);
-    setColorHistory(updated);
-    localStorage.setItem('sketchpadColorHistory', JSON.stringify(updated));
     triggerVisualTaptic('selection', `色彩切換: ${newColor}`);
   };
 
@@ -113,6 +111,15 @@ export default function App() {
   const handleStrokeCompleted = (stroke: Stroke) => {
     setUndoStack([]);
     setStrokes(prev => [...prev, stroke]);
+    // 落筆完成才記錄顏色歷史（橡皮擦不記錄）
+    if (stroke.tool !== 'eraser') {
+      const color = stroke.color;
+      setColorHistory(prev => {
+        const updated = [color, ...prev.filter(c => c !== color)].slice(0, 8);
+        localStorage.setItem('sketchpadColorHistory', JSON.stringify(updated));
+        return updated;
+      });
+    }
   };
 
   const handleUndo = useCallback(() => {
